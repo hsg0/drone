@@ -5,17 +5,19 @@ import uvicorn
 from routes.web import web_routes
 from routes.api import api_routes
 from routes.error import error_routes
+from routes.testflight import testflight
 from middleware.middleware import middleware
 
 app = FastAPI()
 middleware(app)
 app.include_router(web_routes)
 app.include_router(api_routes)
+app.include_router(testflight)
 error_routes(app)
 
 
 @app.get("/", response_class=HTMLResponse)
-def read_root():
+def readRoot():
     return '<a href="/video">Hello, World!</a>'
 
 

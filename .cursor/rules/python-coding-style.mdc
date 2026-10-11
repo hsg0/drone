@@ -9,6 +9,7 @@ Child-readable simplicity. Fully descriptive names. Fewest files possible. Corre
 
 ## Names
 
+- Use camelCase so we can keep our functions seprate from the ones in the libraries.
 - Use fully descriptive names for functions, variables, parameters, and constants.
 - Avoid abbreviations except standard drone terms: GPS, MAVLink, IMU, UART, PWM.
 - Avoid vague names such as data, temp, val, x, thing, or stuff.
