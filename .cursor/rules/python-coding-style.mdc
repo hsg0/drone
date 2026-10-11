@@ -1,0 +1,60 @@
+---
+description: Python coding style — simple, descriptive names, few files
+alwaysApply: true
+---
+
+# Python coding style
+
+Child-readable simplicity. Fully descriptive names. Fewest files possible. Correctness and clarity before cleverness or optimization.
+
+## Names
+
+- Use fully descriptive names for functions, variables, parameters, and constants.
+- Avoid abbreviations except standard drone terms: GPS, MAVLink, IMU, UART, PWM.
+- Avoid vague names such as data, temp, val, x, thing, or stuff.
+- Include units when that makes the meaning clearer, such as altitudeMeters, climbRateMetersPerSecond, or timeoutSeconds.
+- Avoid magic numbers. Give flight limits, heights, timeouts, climb rates, and hold times descriptive constant names.
+
+## Structure
+
+- Keep the code simple enough for a beginner to follow. Readable code matters more than short code.
+- Write each script so it reads like a story from top to bottom.
+- Create the fewest files possible. Split code into another file only when that clearly makes the project easier to understand.
+- Reuse existing functions, constants, and helpers before creating new ones.
+- Preserve working architecture. Make the smallest necessary change. Do not remove working functionality unless the requested change requires it.
+- Keep related code together, such as connection settings, flight settings, MAVLink helpers, altitude handling, and main flight logic.
+- Use section headings so the script is easy to scan.
+- Each function does one clear job and is understandable from its name without reading the whole body.
+- Do not create tiny helper functions just for abstraction.
+
+## Script header
+
+Every important script begins with:
+
+- WHAT — exactly what the script does
+- WHY — why the script exists or why its behavior is designed that way
+- HOW — the important sequence of operations and data flow
+- IMPORTANT — assumptions, hardware requirements, and anything that must not be misunderstood
+
+## Comments and output
+
+- Comments explain why something is done, not obvious Python syntax.
+- Comment unusual MAVLink behavior, ArduPilot parameters, bitmasks, and flight assumptions.
+- Log important state changes: connection, mode, arm status, altitude source, landing, errors, and disarming.
+- Do not flood the terminal. Print what helps us understand what the copter is doing.
+
+## Example
+
+```python
+# Unclear
+def go(d, t):
+    return d * t
+
+# Clear
+CLIMB_RATE_METERS_PER_SECOND = 0.5
+
+def distanceClimbedMeters(climbRateMetersPerSecond, holdTimeSeconds):
+    return climbRateMetersPerSecond * holdTimeSeconds
+```
+
+Every command that can affect the copter must travel through a clear, understandable path. The goal is the simplest code that is still correct, maintainable, testable, and suitable for controlling real drone hardware.
