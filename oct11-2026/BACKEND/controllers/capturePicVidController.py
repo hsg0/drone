@@ -1,7 +1,12 @@
+import collections
 import os
+import subprocess
+import sys
+import threading
 import time
 
 import cv2
+import numpy
 
 
 MEDIA_FOLDER = os.path.join(os.path.dirname(__file__), "..", "media")
@@ -13,6 +18,11 @@ CAMERA_HEIGHT_PIXELS = 480
 CAMERA_FRAMES_PER_SECOND = 10
 GESTURE_RECORD_SECONDS = 3
 BLUR_KERNEL_SIZE = 15
+# A stream with no pause uses a whole Pi core, and then /flight/status stops answering.
+STREAM_FRAMES_PER_SECOND = 8
+STREAM_FRAME_SECONDS = 1.0 / STREAM_FRAMES_PER_SECOND
+# Where rpicam-vid writes its reason when the camera will not start.
+RPICAM_COMPLAINT_PATH = "/tmp/oct11-camera.log"
 
 # OpenCV hue runs from 0 to 179. Yellow sits in this band.
 YELLOW_HUE_MINIMUM = 20
@@ -104,7 +114,7 @@ def yellowBox(frame):
     ]
 
 
-def applyEffect(frame, effect):
+def applyEffect(frame, effect, rememberGesture=False):
     if effect == "gray":
         return grayScale(frame)
     if effect == "blur":
@@ -114,7 +124,7 @@ def applyEffect(frame, effect):
     if effect == "yellow":
         return yellowBox(frame)
     if effect == "gesture":
-        return markGesture(frame)[0]
+        return markGesture(frame, rememberGesture)[0]
     return frame
 
 
@@ -125,6 +135,30 @@ def jpegBytes(frame):
     return jpeg.tobytes()
 
 
+# Every reload of the website opens another stream. Old streams keep reading
+# frames until the browser notices, and several at once starve this Pi.
+streamCountLock = threading.Lock()
+newestStreamNumber = 0
+
+
+def claimNewestStream():
+    """Take the newest stream number. Older streams stop when they see a newer one."""
+    global newestStreamNumber
+    with streamCountLock:
+        newestStreamNumber += 1
+        return newestStreamNumber
+
+
+def streamIsNewest(streamNumber):
+    with streamCountLock:
+        return streamNumber == newestStreamNumber
+
+
+def currentStreamNumber():
+    with streamCountLock:
+        return newestStreamNumber
+
+
 def videoFrames(effect=None):
     """Read test_video.mp4 one frame at a time and hand each frame back as JPEG bytes."""
     capture = cv2.VideoCapture(VIDEO_PATH)
@@ -132,8 +166,10 @@ def videoFrames(effect=None):
         capture.release()
         return
 
+    streamNumber = claimNewestStream()
     try:
-        while True:
+        while streamIsNewest(streamNumber):
+            frameStartedAtSeconds = time.monotonic()
             success, frame = capture.read()
             if not success:
                 break
@@ -141,35 +177,162 @@ def videoFrames(effect=None):
             if jpeg is None:
                 continue
             yield jpeg
+            restSeconds = STREAM_FRAME_SECONDS - (time.monotonic() - frameStartedAtSeconds)
+            if restSeconds > 0:
+                time.sleep(restSeconds)  # leave the Pi enough time to answer the website
     finally:
         capture.release()
 
 
-def openPiCamera():
-    """Open the Raspberry Pi camera. Picamera2 RGB888 frames are BGR for OpenCV."""
-    from picamera2 import Picamera2
+class RpicamCamera:
+    """Camera pictures from the rpicam-vid program.
 
-    camera = Picamera2()
-    configuration = camera.create_preview_configuration(
-        main={"size": (CAMERA_WIDTH_PIXELS, CAMERA_HEIGHT_PIXELS), "format": "RGB888"}
-    )
-    camera.configure(configuration)
-    camera.start()
+    picamera2 belongs to the Pi system Python, not to this virtual environment,
+    and /dev/video0 is the raw sensor, which gives no usable picture.
+    rpicam-vid writes finished JPEG pictures, so it works from here.
+    The method names copy picamera2 so the rest of this file does not change.
+    """
+
+    def __init__(self):
+        self.complaintFile = open(RPICAM_COMPLAINT_PATH, "w+")
+        self.process = subprocess.Popen(
+            [
+                "rpicam-vid",
+                "--codec", "mjpeg",
+                "--timeout", "0",  # 0 keeps the camera running until this file stops it
+                "--nopreview",
+                "--width", str(CAMERA_WIDTH_PIXELS),
+                "--height", str(CAMERA_HEIGHT_PIXELS),
+                "--framerate", str(CAMERA_FRAMES_PER_SECOND),
+                "--output", "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=self.complaintFile,
+        )
+        self.pictureBytes = bytearray()
+        self.firstPicture = None
+        # Ask for one picture now, so a busy camera is reported before the stream starts.
+        self.firstPicture = self.capture_array()
+
+    def cameraComplaint(self):
+        """The last thing rpicam-vid said. A camera already in use says so here."""
+        self.complaintFile.flush()
+        self.complaintFile.seek(0)
+        lines = [line.strip() for line in self.complaintFile.readlines() if line.strip()]
+        return lines[-1] if lines else "no reason given"
+
+    def capture_array(self):
+        """One picture in blue-green-red order, the order OpenCV uses."""
+        jpegStartMarker = b"\xff\xd8"
+        jpegEndMarker = b"\xff\xd9"
+        if self.firstPicture is not None:
+            picture = self.firstPicture
+            self.firstPicture = None
+            return picture
+        while True:
+            startAt = self.pictureBytes.find(jpegStartMarker)
+            endAt = self.pictureBytes.find(jpegEndMarker, startAt + 2) if startAt >= 0 else -1
+            if startAt >= 0 and endAt >= 0:
+                onePicture = bytes(self.pictureBytes[startAt:endAt + 2])
+                del self.pictureBytes[:endAt + 2]
+                frame = cv2.imdecode(numpy.frombuffer(onePicture, numpy.uint8), cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return frame
+                continue
+            moreBytes = self.process.stdout.read(4096)
+            if not moreBytes:
+                raise RuntimeError("The camera sent no pictures: {}".format(self.cameraComplaint()))
+            self.pictureBytes.extend(moreBytes)
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+
+    def close(self):
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=3)
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+        self.complaintFile.close()
+
+
+# The Pi has one camera. A browser that walks away leaves its stream asleep,
+# and an asleep stream never closes the camera by itself. So the next viewer
+# closes it instead.
+liveCameraLock = threading.Lock()
+liveCamera = None
+liveCameraStreamNumber = None
+
+
+def takeCameraFromOlderViewer():
+    """Close the camera an older viewer left open."""
+    global liveCamera
+    global liveCameraStreamNumber
+    with liveCameraLock:
+        olderCamera = liveCamera
+        liveCamera = None
+        liveCameraStreamNumber = None
+    if olderCamera is None:
+        return
+    print("Closing the camera an older viewer left open.")
+    olderCamera.stop()
+    olderCamera.close()
+
+
+def openPiCamera():
+    """Take the camera from any older viewer, then open it. BGR frames suit OpenCV."""
+    global liveCamera
+    global liveCameraStreamNumber
+    streamNumber = claimNewestStream()  # the older stream sees a newer number and stops
+    takeCameraFromOlderViewer()
+    try:
+        from picamera2 import Picamera2
+    except ImportError:
+        print("picamera2 is not in this virtual environment. Using rpicam-vid instead.")
+        camera = RpicamCamera()
+    else:
+        camera = Picamera2()
+        configuration = camera.create_preview_configuration(
+            main={"size": (CAMERA_WIDTH_PIXELS, CAMERA_HEIGHT_PIXELS), "format": "RGB888"}
+        )
+        camera.configure(configuration)
+        camera.start()
+    with liveCameraLock:
+        liveCamera = camera
+        liveCameraStreamNumber = streamNumber
     return camera
 
 
 def cameraFrames(camera, effect=None):
     """Hand back one JPEG at a time, then close the camera."""
+    streamNumber = currentStreamNumber()  # openPiCamera already claimed this number
     try:
-        while True:
+        while streamIsNewest(streamNumber):
+            frameStartedAtSeconds = time.monotonic()
             frame = camera.capture_array()
-            jpeg = jpegBytes(applyEffect(frame, effect))
+            # Only the live camera may update the pose the website sends to the copter.
+            jpeg = jpegBytes(applyEffect(frame, effect, rememberGesture=True))
             if jpeg is None:
                 continue
             yield jpeg
+            restSeconds = STREAM_FRAME_SECONDS - (time.monotonic() - frameStartedAtSeconds)
+            if restSeconds > 0:
+                time.sleep(restSeconds)  # leave the Pi enough time to answer the website
     finally:
-        camera.stop()
-        camera.close()
+        rememberSeenGesture("not-seen", "not seen", "no command")
+        global liveCamera
+        global liveCameraStreamNumber
+        with liveCameraLock:
+            cameraIsStillOurs = liveCameraStreamNumber == streamNumber
+            if cameraIsStillOurs:
+                liveCamera = None
+                liveCameraStreamNumber = None
+        if cameraIsStillOurs:  # a newer viewer may already have closed it
+            camera.stop()
+            camera.close()
 
 
 # Pose numbers from the body model. Y grows downward, so a smaller Y is higher.
@@ -180,7 +343,81 @@ LEFT_WRIST_LANDMARK = 15
 RIGHT_WRIST_LANDMARK = 16
 POSE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "pose_landmarker_lite.task")
 GESTURE_BOX_PADDING_PIXELS = 16
+
+# YOLO pose is the detector for the Pi 4, where MediaPipe will not run.
+# It reports 17 body points. These five are the ones the gestures need.
+YOLO_POSE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "yolo11n-pose.onnx")
+YOLO_INPUT_PIXELS = 256
+YOLO_PERSON_SCORE_MINIMUM = 0.4
+YOLO_KEYPOINT_FOR_LANDMARK = {
+    NOSE_LANDMARK: 0,
+    LEFT_SHOULDER_LANDMARK: 5,
+    RIGHT_SHOULDER_LANDMARK: 6,
+    LEFT_WRIST_LANDMARK: 9,
+    RIGHT_WRIST_LANDMARK: 10,
+}
+
+# One body point, as a share of the picture. MediaPipe hands back the same two names.
+BodyPoint = collections.namedtuple("BodyPoint", ["x", "y"])
+
 poseLandmarker = None
+yoloPoseSession = None
+mediapipeWorksOnThisComputer = None
+gestureSeenLock = threading.Lock()
+latestSeenGesture = {
+    "gesture": "not-seen",
+    "pose": "not seen",
+    "command": "no command",
+}
+
+
+def rememberSeenGesture(gestureName, seenPose, commandName):
+    """Keep the newest live-camera pose. The website reads this and may send it to the copter."""
+    global latestSeenGesture
+    with gestureSeenLock:
+        latestSeenGesture = {
+            "gesture": gestureName,
+            "pose": seenPose,
+            "command": commandName,
+        }
+
+
+def seenGesture():
+    """The newest live-camera pose. This does not arm or move the copter."""
+    with gestureSeenLock:
+        return dict(latestSeenGesture)
+
+
+def mediapipeCanRun():
+    """True when MediaPipe survives one frame. On a Pi 4 it stops the whole program, so ask a separate one."""
+    global mediapipeWorksOnThisComputer
+    if mediapipeWorksOnThisComputer is not None:
+        return mediapipeWorksOnThisComputer
+    backendFolder = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import cv2\n"
+            "from controllers.capturePicVidController import mediapipeBodyLandmarks\n"
+            "capture = cv2.VideoCapture('test_video.mp4')\n"
+            "ok, frame = capture.read()\n"
+            "capture.release()\n"
+            "if ok:\n"
+            "    mediapipeBodyLandmarks(frame)\n"
+            "print('mediapipe ok')\n",
+        ],
+        cwd=backendFolder,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    mediapipeWorksOnThisComputer = probe.returncode == 0 and "mediapipe ok" in probe.stdout
+    if mediapipeWorksOnThisComputer:
+        print("Pose detection is using MediaPipe.")
+    else:
+        print("MediaPipe will not run on this computer. Pose detection is using YOLO.")
+    return mediapipeWorksOnThisComputer
 
 
 def grayPicture(frame):
@@ -205,8 +442,8 @@ def poseFinder():
     return poseLandmarker
 
 
-def bodyLandmarks(frame):
-    """Find the body. Arms straight up can vanish in gray, so the color frame is the backup."""
+def mediapipeBodyLandmarks(frame):
+    """Find the body with MediaPipe. Arms straight up can vanish in gray, so color is the backup."""
     import mediapipe as mp
 
     grayFrame = grayPicture(frame)
@@ -216,6 +453,48 @@ def bodyLandmarks(frame):
         if poses.pose_landmarks:
             return poses.pose_landmarks[0]
     return None
+
+
+def yoloPoseFinder():
+    global yoloPoseSession
+    if yoloPoseSession is None:
+        import onnxruntime
+
+        yoloPoseSession = onnxruntime.InferenceSession(
+            YOLO_POSE_MODEL_PATH,
+            providers=["CPUExecutionProvider"],
+        )
+    return yoloPoseSession
+
+
+def yoloBodyLandmarks(frame):
+    """Find the body with YOLO pose. Returns the five points the gestures need, or None."""
+    session = yoloPoseFinder()
+    squarePicture = cv2.resize(frame, (YOLO_INPUT_PIXELS, YOLO_INPUT_PIXELS))
+    colorPicture = cv2.cvtColor(squarePicture, cv2.COLOR_BGR2RGB).astype(numpy.float32) / 255.0
+    # YOLO wants one picture, colors first, then height and width.
+    askedPicture = numpy.transpose(colorPicture, (2, 0, 1))[numpy.newaxis, :, :, :]
+    answer = session.run(None, {session.get_inputs()[0].name: askedPicture})[0][0]
+    # Each column is one guess: 4 box numbers, 1 score, then 17 points of x, y, score.
+    personScores = answer[4]
+    bestGuess = int(numpy.argmax(personScores))
+    if float(personScores[bestGuess]) < YOLO_PERSON_SCORE_MINIMUM:
+        return None
+    landmarks = {}
+    for landmarkNumber, keypointNumber in YOLO_KEYPOINT_FOR_LANDMARK.items():
+        firstRow = 5 + keypointNumber * 3
+        xPixels = float(answer[firstRow][bestGuess])
+        yPixels = float(answer[firstRow + 1][bestGuess])
+        # Share of the picture, so the gesture rules read the same as MediaPipe's.
+        landmarks[landmarkNumber] = BodyPoint(xPixels / YOLO_INPUT_PIXELS, yPixels / YOLO_INPUT_PIXELS)
+    return landmarks
+
+
+def bodyLandmarks(frame):
+    """Find the body with whichever detector this computer can run."""
+    if mediapipeCanRun():
+        return mediapipeBodyLandmarks(frame)
+    return yoloBodyLandmarks(frame)
 
 
 def gestureFromArms(noseY, shoulderY, wristY, shoulderSpread, wristSpread):
@@ -236,12 +515,21 @@ def gestureFromArms(noseY, shoulderY, wristY, shoulderSpread, wristSpread):
     return "fly-down", "arms coming down", "fly down"
 
 
-def markGesture(frame):
+def markGesture(frame, remember=False):
     """Gray the picture, box the body, and name the gesture and the flight command."""
     grayFrame = grayPicture(frame)
-    landmarks = bodyLandmarks(frame)
+    try:
+        landmarks = bodyLandmarks(frame)
+    except Exception as error:  # a broken detector must not stop the stream
+        yellowBoxText(grayFrame, 8, 8, grayFrame.shape[1] - 16, 40, "pose off\nno command")
+        print("Pose detection failed: {}".format(error))
+        if remember:
+            rememberSeenGesture("not-seen", "pose off", "no command")
+        return grayFrame, "not-seen"
     if landmarks is None:
         yellowBoxText(grayFrame, 8, 8, grayFrame.shape[1] - 16, 40, "not seen\nno command")
+        if remember:
+            rememberSeenGesture("not-seen", "not seen", "no command")
         return grayFrame, "not-seen"
 
     heightPixels, widthPixels = grayFrame.shape[:2]
@@ -266,6 +554,8 @@ def markGesture(frame):
     gestureName, seenPose, commandName = gestureFromArms(
         noseY, shoulderY, wristY, shoulderSpread, wristSpread
     )
+    if remember:
+        rememberSeenGesture(gestureName, seenPose, commandName)
     cv2.rectangle(
         grayFrame,
         (itemXPixels, itemYPixels),

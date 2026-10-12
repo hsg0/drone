@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const GESTURE_COMMAND_LIST = [
   {
@@ -57,31 +57,33 @@ const VISION_EFFECTS = [
 ];
 
 export default function Home() {
-  const [feedSource, setFeedSource] = useState("video"); // "video" | "camera" | "off"
+  // Starts on standby. A stream opened by every page load keeps the Pi busy.
+  const [feedSource, setFeedSource] = useState("off"); // "video" | "camera" | "off"
   const [activeEffect, setActiveEffect] = useState("gesture");
   const [backendEndpoint, setBackendEndpoint] = useState("/backend");
   const [backendOnline, setBackendOnline] = useState(false);
   const [backendLatencyMs, setBackendLatencyMs] = useState(null);
-  const [testFlightInfo, setTestFlightInfo] = useState(null);
-  const [flightInfoLoading, setFlightInfoLoading] = useState(false);
   const [recordingState, setRecordingState] = useState("idle"); // "idle" | "recording" | "done" | "error"
   const [recordingDetails, setRecordingDetails] = useState(null);
   const [streamError, setStreamError] = useState(false);
+  const [flightStatus, setFlightStatus] = useState(null);
+  const [flightCommandName, setFlightCommandName] = useState(null);
+  const [flightCommandError, setFlightCommandError] = useState(null);
+  const [liveGesture, setLiveGesture] = useState(null);
+  const lastSentGestureRef = useRef(null);
+  const flightGateRef = useRef({ allowed: false, busy: false, sending: false });
 
-  // Ping backend health and fetch flight route status
+  // Ping the backend so the header can show whether it is answering.
   const checkBackendStatus = useCallback(async () => {
-    setFlightInfoLoading(true);
     const start = performance.now();
     try {
-      const response = await fetch(`${backendEndpoint}/testflight`, {
+      const response = await fetch(`${backendEndpoint}/flight/status`, {
         cache: "no-store",
       });
       const latency = Math.round(performance.now() - start);
       if (response.ok) {
-        const data = await response.json();
         setBackendOnline(true);
         setBackendLatencyMs(latency);
-        setTestFlightInfo(data);
       } else {
         setBackendOnline(false);
         setBackendLatencyMs(null);
@@ -89,8 +91,22 @@ export default function Home() {
     } catch {
       setBackendOnline(false);
       setBackendLatencyMs(null);
-    } finally {
-      setFlightInfoLoading(false);
+    }
+  }, [backendEndpoint]);
+
+  const readFlightStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${backendEndpoint}/flight/status`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      setFlightStatus(data);
+      setBackendOnline(true);
+    } catch {
+      setFlightStatus(null);
     }
   }, [backendEndpoint]);
 
@@ -99,6 +115,117 @@ export default function Home() {
     const interval = setInterval(checkBackendStatus, 10000);
     return () => clearInterval(interval);
   }, [checkBackendStatus]);
+
+  useEffect(() => {
+    readFlightStatus();
+    const interval = setInterval(readFlightStatus, 2000);
+    return () => clearInterval(interval);
+  }, [readFlightStatus]);
+
+  const sendFlightCommand = async (path, commandName, body) => {
+    setFlightCommandName(commandName);
+    setFlightCommandError(null);
+    try {
+      const response = await fetch(`${backendEndpoint}${path}`, {
+        method: "POST",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail =
+          typeof data.detail === "string"
+            ? data.detail
+            : "The flight command was refused.";
+        setFlightCommandError(detail);
+      } else {
+        setFlightStatus(data);
+      }
+    } catch (error) {
+      setFlightCommandError(error.message);
+    } finally {
+      setFlightCommandName(null);
+      readFlightStatus();
+    }
+  };
+
+  const heightText =
+    flightStatus?.heightMeters == null
+      ? "height waiting"
+      : `${(flightStatus.heightMeters * 3.28084).toFixed(1)} ft`;
+  const posesAreLocked = !flightStatus?.allowed || flightCommandName !== null;
+
+  flightGateRef.current = {
+    allowed: Boolean(flightStatus?.allowed),
+    busy: Boolean(flightStatus?.busy),
+    sending: flightCommandName !== null,
+    armed: Boolean(flightStatus?.armed),
+  };
+
+  // The live camera names the pose. After Allow, that pose flies the copter.
+  useEffect(() => {
+    if (feedSource !== "camera" || activeEffect !== "gesture") {
+      return undefined;
+    }
+    let stopped = false;
+
+    const followLiveGesture = async () => {
+      try {
+        const response = await fetch(`${backendEndpoint}/flight/seen`, {
+          cache: "no-store",
+        });
+        if (!response.ok || stopped) {
+          return;
+        }
+        const seen = await response.json();
+        if (stopped || !seen?.gesture) {
+          return;
+        }
+        setLiveGesture(seen);
+        const gate = flightGateRef.current;
+        if (!gate.allowed || gate.busy || gate.sending) {
+          return;
+        }
+        const gestureName = seen.gesture;
+        // Only the wide V may arm. Other poses must not replace that result
+        // with "the takeoff pose arms it" while the copter is still disarmed.
+        if (!gate.armed && gestureName !== "takeoff-land") {
+          return;
+        }
+        if (gestureName === "not-seen") {
+          if (
+            lastSentGestureRef.current &&
+            lastSentGestureRef.current !== "not-seen"
+          ) {
+            lastSentGestureRef.current = "not-seen";
+            sendFlightCommand("/flight/gesture", "not-seen", {
+              gesture: "not-seen",
+            });
+          }
+          return;
+        }
+        // A held wide V must not land. A held hover must not be sent again.
+        const sendOnce =
+          gestureName === "takeoff-land" || gestureName === "hover";
+        if (sendOnce && lastSentGestureRef.current === gestureName) {
+          return;
+        }
+        lastSentGestureRef.current = gestureName;
+        sendFlightCommand("/flight/gesture", gestureName, {
+          gesture: gestureName,
+        });
+      } catch {
+        // The camera may not have named a pose yet.
+      }
+    };
+
+    followLiveGesture();
+    const interval = setInterval(followLiveGesture, 700);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [feedSource, activeEffect, backendEndpoint]);
 
   // Record gesture training clip (3s @ 10fps on Pi camera)
   const handleRecordGesture = async () => {
@@ -139,7 +266,7 @@ export default function Home() {
               <div className="flex items-center gap-2">
                 <h1 className="font-bold tracking-wider uppercase text-sm sm:text-base text-neutral-50">
                   Drone Vision & Flight Deck
-                </h1>
+          </h1>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60 uppercase">
                   v1.0
                 </span>
@@ -268,6 +395,7 @@ export default function Home() {
                   type="button"
                   onClick={() => {
                     setFeedSource("camera");
+                    setActiveEffect("gesture");
                     setStreamError(false);
                   }}
                   className={`px-3 py-1 rounded text-xs transition-all ${
@@ -468,47 +596,119 @@ export default function Home() {
 
         {/* Right Column: Flight Commands & Drone Deck (4 cols on lg) */}
         <div className="lg:col-span-4 flex flex-col gap-6">
-          {/* Test Flight Status Card */}
+          {/* Flight command card */}
           <div className="bg-neutral-900/70 border border-neutral-800 rounded-2xl p-5 flex flex-col gap-4 shadow-xl">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-xl">🛸</span>
                 <div>
                   <h3 className="font-bold text-sm text-neutral-100 uppercase tracking-wide">
-                    Flight Controller Bridge
+                    Flight Controller
                   </h3>
                   <span className="text-[10px] font-mono text-neutral-400">
-                    Endpoint: <code className="text-cyan-400">/testflight</code>
+                    Pins 8 and 10 · <code className="text-cyan-400">/flight</code>
                   </span>
                 </div>
               </div>
 
               <span
                 className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase ${
-                  testFlightInfo?.armed
+                  flightStatus?.armed
                     ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
                     : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                 }`}
               >
-                {testFlightInfo?.armed ? "ARMED" : "DISARMED"}
+                {flightStatus?.armed ? "ARMED" : "DISARMED"}
               </span>
             </div>
 
             <p className="text-xs text-neutral-400 leading-relaxed">
-              Synchronizes with the Pixhawk autopilot via MAVLink pins 8 &amp; 10.
-              Gestures recognized by MediaPipe are converted to discrete flight
-              maneuvers once held steadily for 1 second.
+              Allow opens the command cable and does not arm. Pi Camera then
+              watches the pose. A wide V arms and takes off. Arms down hovers.
+              Stop lands and closes the cable.
             </p>
 
-            <button
-              type="button"
-              onClick={checkBackendStatus}
-              disabled={flightInfoLoading}
-              className="w-full py-2 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-mono font-medium text-neutral-200 transition border border-neutral-700 flex items-center justify-center gap-2"
-            >
-              <span className={flightInfoLoading ? "animate-spin" : ""}>🔄</span>
-              {flightInfoLoading ? "Querying..." : "Refresh Flight Status"}
-            </button>
+            <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] font-mono">
+              <div className="text-neutral-500">Camera sees</div>
+              <div className="text-neutral-100">
+                {feedSource === "camera" && activeEffect === "gesture"
+                  ? liveGesture?.pose || "waiting for a pose"
+                  : "open Pi Camera"}
+              </div>
+              <div className="text-cyan-300">
+                {feedSource === "camera" && activeEffect === "gesture"
+                  ? liveGesture?.command || "no command"
+                  : "no command"}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-2">
+                <div className="text-neutral-500">Link</div>
+                <div className={flightStatus?.connected ? "text-emerald-300" : "text-neutral-300"}>
+                  {flightStatus?.connected ? "Connected" : "Closed"}
+                </div>
+              </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-2">
+                <div className="text-neutral-500">Height</div>
+                <div className="text-neutral-200">{heightText}</div>
+              </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-2">
+                <div className="text-neutral-500">Gesture flight</div>
+                <div className={flightStatus?.allowed ? "text-amber-300" : "text-neutral-300"}>
+                  {flightStatus?.allowed ? "Allowed" : "Off"}
+                </div>
+              </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-2">
+                <div className="text-neutral-500">Last pose</div>
+                <div className="text-neutral-200 truncate">
+                  {flightStatus?.lastGesture || "none"}
+                </div>
+              </div>
+              <div className="col-span-2 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-2">
+                <div className="text-neutral-500">GPS</div>
+                <div className="text-neutral-200">
+                  {flightStatus?.gps || "waiting for GPS"}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => sendFlightCommand("/flight/allow", "allow")}
+                disabled={flightCommandName !== null || flightStatus?.allowed}
+                className="py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:bg-neutral-800 disabled:text-neutral-500 text-xs font-mono font-semibold text-black transition"
+              >
+                {flightCommandName === "allow"
+                  ? "Opening cable..."
+                  : flightStatus?.allowed
+                  ? "Flight allowed"
+                  : "Allow gesture flight"}
+              </button>
+              <button
+                type="button"
+                onClick={() => sendFlightCommand("/flight/stop", "stop")}
+                disabled={flightCommandName === "stop"}
+                className="py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:bg-neutral-800 disabled:text-neutral-500 text-xs font-mono font-semibold text-white transition"
+              >
+                {flightCommandName === "stop" ? "Landing..." : "Stop and land"}
+              </button>
+            </div>
+
+            {(flightCommandError || flightStatus?.lastResult?.action) && (
+              <p
+                className={`text-[11px] font-mono leading-relaxed ${
+                  flightCommandError || flightStatus?.lastResult?.accepted === false
+                    ? "text-rose-300"
+                    : "text-emerald-300"
+                }`}
+              >
+                {flightCommandError ||
+                  (flightStatus?.busy ? "Command running. " : "") +
+                    (flightStatus?.lastResult?.action || "")}
+              </p>
+            )}
           </div>
 
           {/* Gesture Recognition Command Matrix */}
@@ -524,32 +724,45 @@ export default function Home() {
             </div>
 
             <div className="flex flex-col gap-2.5 overflow-y-auto max-h-[460px] pr-1">
-              {GESTURE_COMMAND_LIST.map((cmd) => (
-                <div
-                  key={cmd.id}
-                  className={`p-3 rounded-xl border bg-gradient-to-r flex items-start gap-3 transition-all hover:scale-[1.01] ${cmd.color}`}
-                >
-                  <span className="text-xl mt-0.5 select-none">{cmd.icon}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="text-xs font-bold font-mono truncate">
-                        {cmd.action}
-                      </h4>
-                      <span className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded bg-black/40 border border-white/10 text-white/80 shrink-0">
-                        {cmd.id}
-                      </span>
+              {GESTURE_COMMAND_LIST.map((cmd) => {
+                const isLastGesture =
+                  flightStatus?.lastGesture === cmd.id ||
+                  liveGesture?.gesture === cmd.id;
+                return (
+                  <button
+                    key={cmd.id}
+                    type="button"
+                    disabled={posesAreLocked}
+                    onClick={() =>
+                      sendFlightCommand("/flight/gesture", cmd.id, {
+                        gesture: cmd.id,
+                      })
+                    }
+                    className={`p-3 rounded-xl border bg-gradient-to-r flex items-start gap-3 text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${cmd.color} ${
+                      isLastGesture ? "ring-1 ring-white/50" : ""
+                    }`}
+                  >
+                    <span className="text-xl mt-0.5 select-none">{cmd.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold font-mono truncate">
+                          {flightCommandName === cmd.id ? "Sending..." : cmd.action}
+                        </h4>
+                        <span className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded bg-black/40 border border-white/10 text-white/80 shrink-0">
+                          {cmd.id}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-400 mt-0.5 leading-snug">
+                        Pose: <span className="text-neutral-200">{cmd.pose}</span>
+                      </p>
                     </div>
-                    <p className="text-[11px] text-neutral-400 mt-0.5 leading-snug">
-                      Pose: <span className="text-neutral-200">{cmd.pose}</span>
-                    </p>
-                  </div>
-                </div>
-              ))}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="pt-2 border-t border-neutral-800/80 text-[11px] text-neutral-500 font-mono">
-              💡 Tip: Activate <strong className="text-cyan-400">Gesture AI</strong> above to see
-              the yellow tracking box and real-time command classification on your video feed.
+              Pi Camera follows the pose after Allow. The wide V arms and takes off. Arms down hovers.
             </div>
           </div>
         </div>

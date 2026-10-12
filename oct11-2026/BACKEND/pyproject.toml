@@ -10,7 +10,10 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.143.0",
     "mediapipe>=1.1.0",
+    "onnxruntime>=1.31.0",
     "opencv-python-headless>=5.0.0.93",
+    "pymavlink>=2.4.50",
+    "pyserial>=3.5",
     "uvicorn>=0.54.0",
 ]
 
