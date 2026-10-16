@@ -1,0 +1,121 @@
+Flight log file : /home/drone/Desktop/scripts/oct16-2026/flightLog/preCalibration-motorTest#2.log
+Run started at  : 2026-10-16 02:01:55 PDT
+
+==============================================
+BEFORE CALIBRATION MOTOR TEST
+==============================================
+
+Each motor spins alone for 20 seconds.
+Throttle steps: 10, 15, 20, then 25 percent. Five seconds each.
+Order: motor 1, motor 2, motor 3, motor 4.
+Take the propellers off first.
+No GPS or compass is required.
+
+> Type YES to start: YES
+
+Opening /dev/serial0 at 57600 baud.
+Connected to Pixhawk system 1, component 1.
+
+Motor 1, front-right, should turn counter-clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 1 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 stopped.
+Waiting 2 seconds before the next motor.
+PIXHAWK: starting motor test
+PIXHAWK: finished motor test
+
+Motor 2, back-left, should turn counter-clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 2 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 stopped.
+Waiting 2 seconds before the next motor.
+PIXHAWK: starting motor test
+PIXHAWK: finished motor test
+
+Motor 3, front-left, should turn clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 3 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 stopped.
+Waiting 2 seconds before the next motor.
+PIXHAWK: starting motor test
+PIXHAWK: finished motor test
+
+Motor 4, back-right, should turn clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 4 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 stopped.
+
+All four motors finished.
+Pixhawk connection closed.
+Finished.
+
+====================================================================
+PRE-CALIBRATION MOTOR TEST SUMMARY
+====================================================================
+Motor 1 (front-right): COMPLETED
+Motor 2 (back-left): COMPLETED
+Motor 3 (front-left): COMPLETED
+Motor 4 (back-right): COMPLETED
+Overall result: SUCCESS
+Saved flight log: /home/drone/Desktop/scripts/oct16-2026/flightLog/preCalibration-motorTest#2.log
+====================================================================

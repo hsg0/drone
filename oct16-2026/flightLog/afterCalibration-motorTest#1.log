@@ -1,0 +1,245 @@
+Flight log file : /home/drone/Desktop/scripts/oct16-2026/flightLog/afterCalibration-motorTest#1.log
+Run started at  : 2026-10-16 02:07:26 PDT
+
+==============================================
+AFTER CALIBRATION MOTOR TEST
+==============================================
+
+Each motor spins alone for 20 seconds.
+Throttle steps: 10, 15, 20, then 25 percent. Five seconds each.
+Order: motor 1, motor 2, motor 3, motor 4.
+Take the propellers off first.
+No GPS or compass is required.
+
+> Type YES to start: YES
+
+Opening /dev/serial0 at 57600 baud.
+Connected to Pixhawk system 1, component 1.
+
+Motor 1, front-right, should turn counter-clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 1 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 1 stopped.
+
+--- Motor 1 performance ---
+Corner: front-right
+Expected turn: counter-clockwise
+Result: COMPLETED
+Samples: 20
+Commanded throttle: 10 percent to 25 percent
+Battery voltage: low 12.27 V | high 12.30 V | end 12.27 V
+Battery current: low 0.15 A | high 0.44 A | end 0.42 A
+Motor output PWM: low 1116 | high 1267 | end 1267
+Time s | percent | volts | amps | pwm
+   0.0 |      10 |   n/a |  n/a | n/a
+   1.0 |      10 | 12.29 | 0.16 | 1116
+   2.0 |      10 | 12.29 | 0.20 | 1116
+   3.0 |      10 | 12.29 | 0.16 | 1116
+   4.0 |      10 | 12.30 | 0.16 | 1116
+   5.0 |      15 | 12.29 | 0.15 | 1116
+   6.0 |      15 | 12.29 | 0.23 | 1166
+   7.0 |      15 | 12.30 | 0.20 | 1166
+   8.0 |      15 | 12.29 | 0.22 | 1166
+   9.0 |      15 | 12.30 | 0.19 | 1166
+  10.0 |      20 | 12.29 | 0.23 | 1166
+  11.0 |      20 | 12.28 | 0.28 | 1217
+  12.0 |      20 | 12.28 | 0.32 | 1217
+  13.0 |      20 | 12.28 | 0.28 | 1217
+  14.0 |      20 | 12.28 | 0.28 | 1217
+  15.0 |      25 | 12.28 | 0.28 | 1217
+  16.0 |      25 | 12.27 | 0.44 | 1267
+  17.0 |      25 | 12.27 | 0.44 | 1267
+  18.0 |      25 | 12.27 | 0.42 | 1267
+  19.0 |      25 | 12.27 | 0.42 | 1267
+Waiting 2 seconds before the next motor.
+PIXHAWK: starting motor test
+PIXHAWK: finished motor test
+
+Motor 2, back-left, should turn counter-clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 2 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 2 stopped.
+
+--- Motor 2 performance ---
+Corner: back-left
+Expected turn: counter-clockwise
+Result: COMPLETED
+Samples: 20
+Commanded throttle: 10 percent to 25 percent
+Battery voltage: low 12.26 V | high 12.29 V | end 12.26 V
+Battery current: low 0.15 A | high 0.41 A | end 0.41 A
+Motor output PWM: low 1016 | high 1267 | end 1267
+Time s | percent | volts | amps | pwm
+   0.0 |      10 | 12.29 | 0.19 | 1016
+   1.0 |      10 | 12.28 | 0.15 | 1116
+   2.0 |      10 | 12.29 | 0.17 | 1116
+   3.0 |      10 | 12.28 | 0.19 | 1116
+   4.0 |      10 | 12.29 | 0.16 | 1116
+   5.0 |      15 | 12.28 | 0.20 | 1166
+   6.0 |      15 | 12.29 | 0.18 | 1166
+   7.0 |      15 | 12.28 | 0.19 | 1166
+   8.0 |      15 | 12.29 | 0.19 | 1166
+   9.0 |      15 | 12.29 | 0.20 | 1166
+  10.0 |      20 | 12.28 | 0.21 | 1016
+  11.0 |      20 | 12.29 | 0.28 | 1217
+  12.0 |      20 | 12.29 | 0.28 | 1217
+  13.0 |      20 | 12.28 | 0.29 | 1217
+  14.0 |      20 | 12.26 | 0.31 | 1217
+  15.0 |      25 | 12.27 | 0.30 | 1016
+  16.0 |      25 | 12.27 | 0.39 | 1267
+  17.0 |      25 | 12.28 | 0.39 | 1267
+  18.0 |      25 | 12.27 | 0.38 | 1267
+  19.0 |      25 | 12.26 | 0.41 | 1267
+Waiting 2 seconds before the next motor.
+PIXHAWK: starting motor test
+PIXHAWK: finished motor test
+
+Motor 3, front-left, should turn clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 3 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 3 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+Motor 3 stopped.
+
+--- Motor 3 performance ---
+Corner: front-left
+Expected turn: clockwise
+Result: COMPLETED
+Samples: 20
+Commanded throttle: 10 percent to 25 percent
+Battery voltage: low 12.26 V | high 12.29 V | end 12.26 V
+Battery current: low 0.14 A | high 0.43 A | end 0.43 A
+Motor output PWM: low 1016 | high 1267 | end 1267
+Time s | percent | volts | amps | pwm
+   0.0 |      10 | 12.29 | 0.17 | 1016
+   1.0 |      10 | 12.28 | 0.18 | 1116
+   2.0 |      10 | 12.28 | 0.19 | 1116
+   3.0 |      10 | 12.29 | 0.19 | 1116
+   4.0 |      10 | 12.29 | 0.15 | 1116
+   5.0 |      15 | 12.28 | 0.14 | 1016
+   6.0 |      15 | 12.27 | 0.22 | 1166
+   7.0 |      15 | 12.28 | 0.22 | 1166
+   8.0 |      15 | 12.28 | 0.19 | 1166
+   9.0 |      15 | 12.28 | 0.20 | 1166
+  10.0 |      20 | 12.27 | 0.21 | 1217
+  11.0 |      20 | 12.27 | 0.29 | 1217
+  12.0 |      20 | 12.28 | 0.28 | 1217
+  13.0 |      20 | 12.28 | 0.28 | 1217
+  14.0 |      20 | 12.26 | 0.33 | 1217
+  15.0 |      25 | 12.27 | 0.29 | 1016
+  16.0 |      25 | 12.26 | 0.40 | 1267
+  17.0 |      25 | 12.26 | 0.42 | 1267
+  18.0 |      25 | 12.27 | 0.42 | 1267
+  19.0 |      25 | 12.26 | 0.43 | 1267
+Waiting 2 seconds before the next motor.
+PIXHAWK: finished motor test
+PIXHAWK: starting motor test
+PIXHAWK: finished motor test
+
+Motor 4, back-right, should turn clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 4 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 | 15 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 | 20 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 | 25 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+PIXHAWK: finished motor test
+Motor 4 stopped.
+
+--- Motor 4 performance ---
+Corner: back-right
+Expected turn: clockwise
+Result: COMPLETED
+Samples: 20
+Commanded throttle: 10 percent to 25 percent
+Battery voltage: low 12.26 V | high 12.28 V | end 12.26 V
+Battery current: low 0.15 A | high 0.45 A | end 0.41 A
+Motor output PWM: low 1016 | high 1267 | end 1267
+Time s | percent | volts | amps | pwm
+   0.0 |      10 | 12.28 | 0.17 | 1116
+   1.0 |      10 | 12.27 | 0.19 | 1116
+   2.0 |      10 | 12.27 | 0.20 | 1116
+   3.0 |      10 | 12.28 | 0.21 | 1116
+   4.0 |      10 | 12.28 | 0.17 | 1116
+   5.0 |      15 | 12.28 | 0.15 | 1116
+   6.0 |      15 | 12.27 | 0.20 | 1166
+   7.0 |      15 | 12.28 | 0.19 | 1166
+   8.0 |      15 | 12.27 | 0.19 | 1166
+   9.0 |      15 | 12.28 | 0.21 | 1166
+  10.0 |      20 | 12.27 | 0.20 | 1016
+  11.0 |      20 | 12.27 | 0.31 | 1217
+  12.0 |      20 | 12.27 | 0.30 | 1217
+  13.0 |      20 | 12.27 | 0.29 | 1217
+  14.0 |      20 | 12.27 | 0.27 | 1217
+  15.0 |      25 | 12.27 | 0.29 | 1217
+  16.0 |      25 | 12.27 | 0.45 | 1267
+  17.0 |      25 | 12.26 | 0.41 | 1267
+  18.0 |      25 | 12.26 | 0.41 | 1267
+  19.0 |      25 | 12.26 | 0.41 | 1267
+
+All four motors finished.
+Pixhawk connection closed.
+Finished.
+
+====================================================================
+AFTER CALIBRATION MOTOR TEST SUMMARY
+====================================================================
+Motor 1 (front-right): COMPLETED
+Motor 2 (back-left): COMPLETED
+Motor 3 (front-left): COMPLETED
+Motor 4 (back-right): COMPLETED
+Overall result: SUCCESS
+Saved flight log: /home/drone/Desktop/scripts/oct16-2026/flightLog/afterCalibration-motorTest#1.log
+====================================================================

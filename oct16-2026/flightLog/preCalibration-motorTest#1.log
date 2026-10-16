@@ -1,0 +1,36 @@
+Flight log file : /home/drone/Desktop/scripts/oct16-2026/flightLog/preCalibration-motorTest#1.log
+Run started at  : 2026-10-16 01:59:10 PDT
+
+==============================================
+BEFORE CALIBRATION MOTOR TEST
+==============================================
+
+Each motor spins alone for 20 seconds.
+Throttle steps: 10, 15, 20, then 25 percent. Five seconds each.
+Order: motor 1, motor 2, motor 3, motor 4.
+Take the propellers off first.
+No GPS or compass is required.
+
+> Type YES to start: YES
+
+Opening /dev/serial0 at 57600 baud.
+Connected to Pixhawk system 1, component 1.
+
+Motor 1, front-right, should turn counter-clockwise.
+Watch that motor now. The other three stay stopped.
+Motor 1 | 10 percent | 5 seconds
+PIXHAWK: starting motor test
+Motor test answer = 0
+Motor test stopped: The copter armed during the motor test. Stopping.
+Motor stop sent.
+Pixhawk connection closed.
+Finished.
+
+====================================================================
+PRE-CALIBRATION MOTOR TEST SUMMARY
+====================================================================
+Motor 1 (front-right): FAILED
+Overall result: FAILED
+Stop reason: The copter armed during the motor test. Stopping.
+Saved flight log: /home/drone/Desktop/scripts/oct16-2026/flightLog/preCalibration-motorTest#1.log
+====================================================================

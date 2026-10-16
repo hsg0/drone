@@ -1,71 +1,71 @@
 #!/home/drone/dronekit-venv/bin/python3
 """
 WHAT:
-    Spin each Quad X motor by itself for 20 seconds, ramping from 10 percent
-    to 25 percent, and save a performance log for the run.
+    Spin each Quad X motor by itself for 20 seconds, in the same 10, 15, 20,
+    and 25 percent steps used before calibration, and save a performance log.
 
 WHY:
-    This is the same basic motor check used before calibration, run again
-    after calibration. The log records whether each motor was accepted, how
-    the throttle rose, and what the Pixhawk reported for voltage, current,
-    and motor output.
+    This is the check to run again after compass calibration. The log records
+    whether each motor was accepted, the throttle steps, battery voltage,
+    battery current, and the PWM sent to that motor.
 
 HOW:
-    1. Open the next numbered log in oct16-2026/flightLog.
-    2. Connect on pins 8 and 10. Leave USB with the screen.
+    1. Open the next afterCalibration-motorTest#N.log in oct16-2026/flightLog.
+    2. Connect with DroneKit on pins 8 and 10. Leave USB with the screen.
     3. Type YES.
-    4. Refuse to start if the copter is armed.
-    5. Spin motor 1, then 2, then 3, then 4.
-    6. Each spin lasts 20 seconds and climbs from 10 percent to 25 percent.
-    7. Write one performance block per motor, then a run summary.
-    8. Close the link.
+    4. Refuse to start if the copter is armed to fly.
+    5. Spin motor 1, then 2, then 3, then 4. Five seconds at each percent.
+    6. Write one performance block per motor, then a run summary.
+    7. Close the link. A failed or stopped run is still saved.
 
 IMPORTANT:
+    Run this file on the Pi. Do not put python3 in front of the path.
     Take the propellers off before you run this.
-    This script does not arm the Pixhawk.
+    This script does not arm the Pixhawk for flight.
+    A motor test sets the armed flag in the heartbeat. That is not a flight arm.
     The safety switch must be pressed, so the LED is solid, or the
     Pixhawk will refuse the motor test.
     Only one motor is commanded at a time.
-    Ctrl+C tells the current motor to stop. The copter was never armed.
-    The log name is afterCalibration-motorTest-#N.log.
+    Ctrl+C tells the current motor to stop.
+    The log name is afterCalibration-motorTest#N.log.
 """
 
 import os
 import sys
 import time
 
-from pymavlink import mavutil
+from dronekit import connect
+from pymavlink import mavutil as middleMan
 
 
 # Pin 8 transmits. Pin 10 receives. Pin 6 is ground.
-PIXHAWK_SERIAL_PORT = "/dev/serial0"
-PIXHAWK_SERIAL_BAUD = 57600
-
-FLIGHT_LOG_DIRECTORY = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "flightLog",
-)
-LOG_TITLE_PREFIX = "afterCalibration-motorTest-#"
+PIXHAWK_PORT = "/dev/serial0"
+PIXHAWK_BAUD = 57600
+GROUND_STATION_SYSTEM_ID = 255
 
 CONNECTION_TIMEOUT_SECONDS = 15
 HEARTBEAT_STALE_AFTER_SECONDS = 3.0
 MOTOR_TEST_ANSWER_TIMEOUT_SECONDS = 3.0
 MESSAGE_INTERVAL_MICROSECONDS = 200000
+UNKNOWN_BATTERY_READING = -1
 
-START_THROTTLE_PERCENT = 10.0
-END_THROTTLE_PERCENT = 25.0
+FLIGHT_LOG_DIRECTORY = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "flightLog",
+)
+LOG_TITLE_PREFIX = "afterCalibration-motorTest#"
+
 MOTOR_RUN_SECONDS = 20.0
-# A new command this often keeps the ramp moving and stops the motor if the script dies.
-MOTOR_COMMAND_INTERVAL_SECONDS = 0.5
-MOTOR_COMMAND_TIMEOUT_SECONDS = 1.0
+# Four steady speeds. One command covers each step, so the motor is not restarted every half second.
+THROTTLE_STEP_PERCENTS = (10.0, 15.0, 20.0, 25.0)
+SECONDS_PER_THROTTLE_STEP = MOTOR_RUN_SECONDS / len(THROTTLE_STEP_PERCENTS)
 PAUSE_BETWEEN_MOTORS_SECONDS = 2.0
-PRINT_INTERVAL_SECONDS = 1.0
+SAMPLE_INTERVAL_SECONDS = 1.0
 
 # Throttle type 0 means the number is a percent, not a PWM pulse.
 MOTOR_TEST_THROTTLE_IS_PERCENT = 0
 # Zero means test one motor. Copter turns that into a count of one.
 MOTOR_TEST_ONE_MOTOR = 0
-UNKNOWN_BATTERY_READING = -1
 
 # The motor-test command takes the Quad X test order, not the motor number:
 #   test order 1 spins motor 1, front-right, counter-clockwise
@@ -82,12 +82,7 @@ MOTOR_TEST_PLAN = (
 PERFORMANCE_MESSAGE_NAMES = (
     "SYS_STATUS",
     "SERVO_OUTPUT_RAW",
-    "BATTERY_STATUS",
-    "VIBRATION",
-    "ESC_TELEMETRY_1_TO_4",
 )
-
-lastHeartbeatReceivedAtSeconds = None
 
 
 class FlightLog:
@@ -114,7 +109,7 @@ class FlightLog:
 
 
 def nextMotorTestLogPath():
-    """Return the next afterCalibration-motorTest-#N.log path."""
+    """Return the next afterCalibration-motorTest#N.log path."""
     os.makedirs(FLIGHT_LOG_DIRECTORY, exist_ok=True)
     nextNumber = 1
     for fileName in os.listdir(FLIGHT_LOG_DIRECTORY):
@@ -136,56 +131,75 @@ def openFlightLog():
     return logFile, logPath
 
 
-def rememberHeartbeat(pixhawkConnection, message):
-    """Save the time of a heartbeat from this Pixhawk."""
-    global lastHeartbeatReceivedAtSeconds
-    if message.get_srcSystem() != pixhawkConnection.target_system:
-        return
-    lastHeartbeatReceivedAtSeconds = time.monotonic()
+def heartbeatIsFresh(vehicle):
+    """True when a Pixhawk heartbeat arrived within the last 3 seconds.
 
-
-def heartbeatIsFresh():
-    """True when a heartbeat arrived within the last 3 seconds."""
-    if lastHeartbeatReceivedAtSeconds is None:
+    DroneKit's last_heartbeat is already that age in seconds.
+    """
+    heartbeatAgeSeconds = vehicle.last_heartbeat
+    if heartbeatAgeSeconds is None:
         return False
-    heartbeatAgeSeconds = time.monotonic() - lastHeartbeatReceivedAtSeconds
     return heartbeatAgeSeconds <= HEARTBEAT_STALE_AFTER_SECONDS
 
 
 def connectToPixhawk(latestMessages):
-    """Open pins 8 and 10 and wait until the Pixhawk answers."""
+    """Open pins 8 and 10 with DroneKit and wait for a heartbeat."""
+    if not os.path.exists(PIXHAWK_PORT):
+        raise RuntimeError(
+            f"{PIXHAWK_PORT} is not on this computer. "
+            "Run this script on the Pi. Pins 8 and 10 are there."
+        )
     print()
-    print(f"Opening {PIXHAWK_SERIAL_PORT} at {PIXHAWK_SERIAL_BAUD} baud.")
-    pixhawkConnection = mavutil.mavlink_connection(
-        PIXHAWK_SERIAL_PORT,
-        baud=PIXHAWK_SERIAL_BAUD,
-        source_system=255,
-        autoreconnect=False,
+    print(f"Opening {PIXHAWK_PORT} at {PIXHAWK_BAUD} baud.")
+    # wait_ready stays off so this motor test does not download every parameter.
+    vehicle = connect(
+        PIXHAWK_PORT,
+        baud=PIXHAWK_BAUD,
+        wait_ready=False,
+        timeout=CONNECTION_TIMEOUT_SECONDS,
+        source_system=GROUND_STATION_SYSTEM_ID,
+        heartbeat_timeout=CONNECTION_TIMEOUT_SECONDS,
     )
-    heartbeat = pixhawkConnection.wait_heartbeat(timeout=CONNECTION_TIMEOUT_SECONDS)
-    if heartbeat is None:
-        raise RuntimeError("No Pixhawk heartbeat arrived on pin 10.")
-    if pixhawkConnection.target_component == 0:
-        pixhawkConnection.target_component = 1
-    processIncomingMessage(pixhawkConnection, latestMessages, heartbeat)
-    requestPerformanceMessages(pixhawkConnection)
+    if vehicle._master.target_component == 0:
+        vehicle._master.target_component = 1
+
+    @vehicle.on_message("STATUSTEXT")
+    def printStatusText(vehicle, name, message):
+        statusText = getattr(message, "text", "")
+        if isinstance(statusText, bytes):
+            statusText = statusText.decode("ascii", "ignore")
+        statusText = str(statusText).strip("\x00").strip()
+        if statusText:
+            print(f"PIXHAWK: {statusText}")
+
+    @vehicle.on_message(["SYS_STATUS", "SERVO_OUTPUT_RAW"])
+    def rememberPerformance(vehicle, name, message):
+        latestMessages[name] = message
+
+    requestPerformanceMessages(vehicle)
+    deadlineSeconds = time.monotonic() + CONNECTION_TIMEOUT_SECONDS
+    while vehicle.last_heartbeat is None:
+        if time.monotonic() > deadlineSeconds:
+            vehicle.close()
+            raise RuntimeError("No Pixhawk heartbeat arrived on pin 10.")
+        time.sleep(0.1)
     print(
-        f"Connected to Pixhawk system {pixhawkConnection.target_system}, "
-        f"component {pixhawkConnection.target_component}."
+        f"Connected to Pixhawk system {vehicle._master.target_system}, "
+        f"component {vehicle._master.target_component}."
     )
-    return pixhawkConnection
+    return vehicle
 
 
-def requestPerformanceMessages(pixhawkConnection):
-    """Ask for battery, motor output, and vibration while a motor is spinning."""
+def requestPerformanceMessages(vehicle):
+    """Ask for battery and motor-output messages while a motor is spinning."""
     for messageName in PERFORMANCE_MESSAGE_NAMES:
-        messageId = getattr(mavutil.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
+        messageId = getattr(middleMan.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
         if messageId is None:
             continue
-        pixhawkConnection.mav.command_long_send(
-            pixhawkConnection.target_system,
-            pixhawkConnection.target_component,
-            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+        message = vehicle.message_factory.command_long_encode(
+            vehicle._master.target_system,
+            vehicle._master.target_component,
+            middleMan.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
             0,
             messageId,
             MESSAGE_INTERVAL_MICROSECONDS,
@@ -195,63 +209,16 @@ def requestPerformanceMessages(pixhawkConnection):
             0,
             0,
         )
+        vehicle.send_mavlink(message)
+    vehicle.flush()
 
 
-def processIncomingMessage(pixhawkConnection, latestMessages, message):
-    """Store one Pixhawk message and print any status text."""
-    if message is None:
-        return
-    if message.get_type() == "BAD_DATA":
-        return
-    if message.get_srcSystem() not in (0, pixhawkConnection.target_system):
-        return
-    messageType = message.get_type()
-    latestMessages[messageType] = message
-    if messageType == "HEARTBEAT":
-        rememberHeartbeat(pixhawkConnection, message)
-    elif messageType == "STATUSTEXT":
-        statusText = getattr(message, "text", "")
-        if isinstance(statusText, bytes):
-            statusText = statusText.decode("ascii", "ignore")
-        statusText = str(statusText).strip("\x00").strip()
-        if statusText:
-            print(f"PIXHAWK: {statusText}")
-
-
-def readAvailableMessages(pixhawkConnection, latestMessages):
-    """Read every message already waiting on the serial port."""
-    while True:
-        message = pixhawkConnection.recv_match(blocking=False)
-        if message is None:
-            return
-        processIncomingMessage(pixhawkConnection, latestMessages, message)
-
-
-def copterIsArmed(latestMessages):
-    """True when the motors are armed. None until a heartbeat has been stored."""
-    heartbeat = latestMessages.get("HEARTBEAT")
-    if heartbeat is None:
-        return None
-    return bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-
-
-def throttlePercentAtElapsedSeconds(elapsedSeconds):
-    """10 percent at the start of the spin, 25 percent at 20 seconds."""
-    if elapsedSeconds <= 0:
-        return START_THROTTLE_PERCENT
-    if elapsedSeconds >= MOTOR_RUN_SECONDS:
-        return END_THROTTLE_PERCENT
-    rampFraction = elapsedSeconds / MOTOR_RUN_SECONDS
-    throttleRise = END_THROTTLE_PERCENT - START_THROTTLE_PERCENT
-    return START_THROTTLE_PERCENT + (rampFraction * throttleRise)
-
-
-def sendMotorTest(pixhawkConnection, testSequence, throttlePercent, runSeconds):
-    """Ask the Pixhawk to spin one motor at a percent for a short time."""
-    pixhawkConnection.mav.command_long_send(
-        pixhawkConnection.target_system,
-        pixhawkConnection.target_component,
-        mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST,
+def sendMotorTest(vehicle, testSequence, throttlePercent, runSeconds):
+    """Ask the Pixhawk to spin one motor at a percent for the given seconds."""
+    message = vehicle.message_factory.command_long_encode(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        middleMan.mavlink.MAV_CMD_DO_MOTOR_TEST,
         0,
         testSequence,
         MOTOR_TEST_THROTTLE_IS_PERCENT,
@@ -261,27 +228,31 @@ def sendMotorTest(pixhawkConnection, testSequence, throttlePercent, runSeconds):
         0,
         0,
     )
+    vehicle.send_mavlink(message)
+    vehicle.flush()
 
 
-def waitForMotorTestAnswer(pixhawkConnection, latestMessages):
-    """Wait up to 3 seconds for the Pixhawk to accept or refuse the spin."""
+def waitForMotorTestAnswer(vehicle, testSequence, throttlePercent, runSeconds):
+    """Send one motor command and wait until the Pixhawk accepts or refuses it."""
+    answers = []
+
+    @vehicle.on_message("COMMAND_ACK")
+    def rememberAnswer(vehicle, name, message):
+        if message.command == middleMan.mavlink.MAV_CMD_DO_MOTOR_TEST:
+            answers.append(message.result)
+
+    sendMotorTest(vehicle, testSequence, throttlePercent, runSeconds)
     deadlineSeconds = time.monotonic() + MOTOR_TEST_ANSWER_TIMEOUT_SECONDS
     while time.monotonic() < deadlineSeconds:
-        message = pixhawkConnection.recv_match(blocking=True, timeout=0.4)
-        if message is None:
-            continue
-        processIncomingMessage(pixhawkConnection, latestMessages, message)
-        if message.get_type() != "COMMAND_ACK":
-            continue
-        if message.command != mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST:
-            continue
-        return message.result
+        if answers:
+            return answers[-1]
+        time.sleep(0.1)
     return None
 
 
-def stopMotor(pixhawkConnection, testSequence):
+def stopMotor(vehicle, testSequence):
     """Send a zero-throttle motor test so the current motor stops."""
-    sendMotorTest(pixhawkConnection, testSequence, 0, 0)
+    sendMotorTest(vehicle, testSequence, 0, 0)
 
 
 def batteryVoltsAndAmps(latestMessages):
@@ -345,15 +316,14 @@ def printMotorPerformance(motorNumber, cornerName, turnDirection, motorResult, p
         return
     print(
         "Commanded throttle: "
-        f"{performanceSamples[0]['throttlePercent']:.1f} percent to "
-        f"{performanceSamples[-1]['throttlePercent']:.1f} percent"
+        f"{performanceSamples[0]['throttlePercent']:.0f} percent to "
+        f"{performanceSamples[-1]['throttlePercent']:.0f} percent"
     )
     print(f"Battery voltage: {numberSummary([sample['volts'] for sample in performanceSamples], 'V')}")
     print(f"Battery current: {numberSummary([sample['amps'] for sample in performanceSamples], 'A')}")
-    pwmValues = [sample["pwm"] for sample in performanceSamples]
-    usablePwm = [value for value in pwmValues if value is not None]
-    if usablePwm:
-        print(f"Motor output PWM: low {min(usablePwm)} | high {max(usablePwm)} | end {usablePwm[-1]}")
+    pwmValues = [sample["pwm"] for sample in performanceSamples if sample["pwm"] is not None]
+    if pwmValues:
+        print(f"Motor output PWM: low {min(pwmValues)} | high {max(pwmValues)} | end {pwmValues[-1]}")
     else:
         print("Motor output PWM: not reported")
     print("Time s | percent | volts | amps | pwm")
@@ -363,136 +333,103 @@ def printMotorPerformance(motorNumber, cornerName, turnDirection, motorResult, p
         pwmText = "n/a" if sample["pwm"] is None else str(sample["pwm"])
         print(
             f"{sample['elapsedSeconds']:6.1f} | "
-            f"{sample['throttlePercent']:7.1f} | "
+            f"{sample['throttlePercent']:7.0f} | "
             f"{voltsText:>5} | {ampsText:>4} | {pwmText}"
         )
 
 
-def spinOneMotor(pixhawkConnection, latestMessages, motorNumber, testSequence, cornerName, turnDirection):
-    """Ramp one motor from 10 percent to 25 percent and return its performance samples."""
+def spinOneMotor(vehicle, latestMessages, motorNumber, testSequence, cornerName, turnDirection):
+    """Run one motor for 20 seconds and return one sample per second."""
     print()
     print(f"Motor {motorNumber}, {cornerName}, should turn {turnDirection}.")
-    print(
-        f"Ramping from {START_THROTTLE_PERCENT:.0f} percent "
-        f"to {END_THROTTLE_PERCENT:.0f} percent over {MOTOR_RUN_SECONDS:.0f} seconds."
-    )
-
+    print("Watch that motor now. The other three stay stopped.")
     performanceSamples = []
-    startingThrottlePercent = throttlePercentAtElapsedSeconds(0)
-    sendMotorTest(
-        pixhawkConnection,
-        testSequence,
-        startingThrottlePercent,
-        MOTOR_COMMAND_TIMEOUT_SECONDS,
-    )
-    motorTestAnswer = waitForMotorTestAnswer(pixhawkConnection, latestMessages)
-    if motorTestAnswer is None:
-        raise RuntimeError(f"No answer for motor {motorNumber}. That motor was not left running.")
-    print(f"Motor test answer = {motorTestAnswer}")
-    if motorTestAnswer != mavutil.mavlink.MAV_RESULT_ACCEPTED:
-        printMotorPerformance(
-            motorNumber,
-            cornerName,
-            turnDirection,
-            "REFUSED",
-            performanceSamples,
+    elapsedAtStepStart = 0.0
+
+    for throttlePercent in THROTTLE_STEP_PERCENTS:
+        print(
+            f"Motor {motorNumber} | {throttlePercent:.0f} percent | "
+            f"{SECONDS_PER_THROTTLE_STEP:.0f} seconds"
         )
-        raise RuntimeError(
-            "Motor test was refused. Press the safety switch until the LED is solid, then try again."
+        motorTestAnswer = waitForMotorTestAnswer(
+            vehicle,
+            testSequence,
+            throttlePercent,
+            SECONDS_PER_THROTTLE_STEP,
         )
-
-    spinStartedAtSeconds = time.monotonic()
-    lastCommandAtSeconds = 0.0
-    lastPrintedAtSeconds = 0.0
-    recordPerformanceSample(
-        performanceSamples,
-        0.0,
-        startingThrottlePercent,
-        latestMessages,
-        motorNumber,
-    )
-    while True:
-        readAvailableMessages(pixhawkConnection, latestMessages)
-        if not heartbeatIsFresh():
-            raise RuntimeError("Pixhawk heartbeat was lost during the motor test.")
-        if copterIsArmed(latestMessages) is True:
-            raise RuntimeError("The copter armed during the motor test. Stopping.")
-
-        elapsedSeconds = time.monotonic() - spinStartedAtSeconds
-        if elapsedSeconds >= MOTOR_RUN_SECONDS:
-            break
-
-        nowSeconds = time.monotonic()
-        if nowSeconds - lastCommandAtSeconds >= MOTOR_COMMAND_INTERVAL_SECONDS:
-            throttlePercent = throttlePercentAtElapsedSeconds(elapsedSeconds)
-            sendMotorTest(
-                pixhawkConnection,
-                testSequence,
-                throttlePercent,
-                MOTOR_COMMAND_TIMEOUT_SECONDS,
+        if motorTestAnswer is None:
+            printMotorPerformance(motorNumber, cornerName, turnDirection, "NO ANSWER", performanceSamples)
+            raise RuntimeError(f"No answer for motor {motorNumber}. That motor was not left running.")
+        print(f"Motor test answer = {motorTestAnswer}")
+        if motorTestAnswer != middleMan.mavlink.MAV_RESULT_ACCEPTED:
+            printMotorPerformance(motorNumber, cornerName, turnDirection, "REFUSED", performanceSamples)
+            raise RuntimeError(
+                "Motor test was refused. Press the safety switch until the LED is solid, then try again."
             )
-            recordPerformanceSample(
-                performanceSamples,
-                elapsedSeconds,
-                throttlePercent,
-                latestMessages,
-                motorNumber,
-            )
-            lastCommandAtSeconds = nowSeconds
-            if nowSeconds - lastPrintedAtSeconds >= PRINT_INTERVAL_SECONDS:
-                remainingSeconds = max(0.0, MOTOR_RUN_SECONDS - elapsedSeconds)
-                print(
-                    f"Motor {motorNumber} | {throttlePercent:.1f} percent | "
-                    f"{remainingSeconds:.0f} s left"
+
+        stepStartedAtSeconds = time.monotonic()
+        nextSampleAtSeconds = 0.0
+        while time.monotonic() - stepStartedAtSeconds < SECONDS_PER_THROTTLE_STEP:
+            # A motor test sets the armed flag in the heartbeat. That is not a flight arm.
+            if not heartbeatIsFresh(vehicle):
+                printMotorPerformance(
+                    motorNumber,
+                    cornerName,
+                    turnDirection,
+                    "HEARTBEAT LOST",
+                    performanceSamples,
                 )
-                lastPrintedAtSeconds = nowSeconds
-        time.sleep(0.05)
+                raise RuntimeError("Pixhawk heartbeat was lost during the motor test.")
+            secondsIntoStep = time.monotonic() - stepStartedAtSeconds
+            if secondsIntoStep >= nextSampleAtSeconds:
+                recordPerformanceSample(
+                    performanceSamples,
+                    elapsedAtStepStart + secondsIntoStep,
+                    throttlePercent,
+                    latestMessages,
+                    motorNumber,
+                )
+                nextSampleAtSeconds += SAMPLE_INTERVAL_SECONDS
+            time.sleep(0.2)
+        elapsedAtStepStart += SECONDS_PER_THROTTLE_STEP
 
-    stopMotor(pixhawkConnection, testSequence)
+    stopMotor(vehicle, testSequence)
     print(f"Motor {motorNumber} stopped.")
-    printMotorPerformance(
-        motorNumber,
-        cornerName,
-        turnDirection,
-        "COMPLETED",
-        performanceSamples,
-    )
+    printMotorPerformance(motorNumber, cornerName, turnDirection, "COMPLETED", performanceSamples)
     return performanceSamples
 
 
-def printRunSummary(motorOutcomes, logPath):
-    """Write the result of every motor at the end of the log."""
+def printRunSummary(motorOutcomes, overallResult, stopReason, logPath):
+    """Write the result of every motor, including a failed or stopped run."""
     print()
     print("=" * 68)
     print("AFTER CALIBRATION MOTOR TEST SUMMARY")
     print("=" * 68)
-    completedCount = 0
+    if not motorOutcomes:
+        print("No motor was started.")
     for motorNumber, cornerName, resultName in motorOutcomes:
         print(f"Motor {motorNumber} ({cornerName}): {resultName}")
-        if resultName == "COMPLETED":
-            completedCount += 1
-    if completedCount == len(MOTOR_TEST_PLAN):
-        print("Overall result: SUCCESS")
-    elif completedCount == 0:
-        print("Overall result: FAILED")
-    else:
-        print("Overall result: STOPPED PART WAY")
+    print(f"Overall result: {overallResult}")
+    if stopReason:
+        print(f"Stop reason: {stopReason}")
     if logPath is not None:
         print(f"Saved flight log: {logPath}")
     print("=" * 68)
 
 
 def main():
-    """Spin motors 1 through 4, log each motor, then close the link."""
+    """Spin motors 1 through 4, log each motor's performance, then close the link."""
     originalStandardOutput = sys.stdout
     logFile = None
     logPath = None
-    pixhawkConnection = None
+    vehicle = None
     latestMessages = {}
     activeTestSequence = None
     activeMotorNumber = None
     activeCornerName = None
     motorOutcomes = []
+    overallResult = "FAILED"
+    stopReason = None
 
     try:
         logFile, logPath = openFlightLog()
@@ -502,7 +439,7 @@ def main():
         print("==============================================")
         print()
         print("Each motor spins alone for 20 seconds.")
-        print("Throttle starts at 10 percent and rises to 25 percent.")
+        print("Throttle steps: 10, 15, 20, then 25 percent. Five seconds each.")
         print("Order: motor 1, motor 2, motor 3, motor 4.")
         print("Take the propellers off first.")
         print("No GPS or compass is required.")
@@ -513,36 +450,32 @@ def main():
             sys.stdout.writeLogOnly(f"{promptText}{confirmation}\n")
         if confirmation.strip() != "YES":
             print("Cancelled.")
-            motorOutcomes.append((0, "none", "CANCELLED BEFORE START"))
+            overallResult = "CANCELLED"
+            stopReason = "Pilot did not type YES."
             return
 
-        pixhawkConnection = connectToPixhawk(latestMessages)
-        readAvailableMessages(pixhawkConnection, latestMessages)
-        if not heartbeatIsFresh():
+        vehicle = connectToPixhawk(latestMessages)
+        if not heartbeatIsFresh(vehicle):
             raise RuntimeError("Pixhawk heartbeat was lost.")
-        if copterIsArmed(latestMessages) is not False:
-            print("The copter is armed, or arm status is unknown. No motor was started.")
-            motorOutcomes.append((0, "none", "REFUSED BECAUSE ARMED OR UNKNOWN"))
+        if vehicle.armed:
+            print("The copter is armed. No motor was started.")
+            overallResult = "FAILED"
+            stopReason = "The copter was armed."
             return
 
         for motorNumber, testSequence, cornerName, turnDirection in MOTOR_TEST_PLAN:
             activeTestSequence = testSequence
             activeMotorNumber = motorNumber
             activeCornerName = cornerName
-            try:
-                spinOneMotor(
-                    pixhawkConnection,
-                    latestMessages,
-                    motorNumber,
-                    testSequence,
-                    cornerName,
-                    turnDirection,
-                )
-                motorOutcomes.append((motorNumber, cornerName, "COMPLETED"))
-            except Exception:
-                if not any(outcome[0] == motorNumber for outcome in motorOutcomes):
-                    motorOutcomes.append((motorNumber, cornerName, "FAILED"))
-                raise
+            spinOneMotor(
+                vehicle,
+                latestMessages,
+                motorNumber,
+                testSequence,
+                cornerName,
+                turnDirection,
+            )
+            motorOutcomes.append((motorNumber, cornerName, "COMPLETED"))
             activeTestSequence = None
             activeMotorNumber = None
             activeCornerName = None
@@ -551,30 +484,37 @@ def main():
                 time.sleep(PAUSE_BETWEEN_MOTORS_SECONDS)
         print()
         print("All four motors finished.")
+        overallResult = "SUCCESS"
 
     except KeyboardInterrupt:
         print()
         print("Ctrl+C. Stopping the current motor.")
-        if activeMotorNumber is not None and not any(
-            outcome[0] == activeMotorNumber for outcome in motorOutcomes
-        ):
+        overallResult = "STOPPED"
+        stopReason = "User pressed Ctrl+C."
+        if activeMotorNumber is not None:
             motorOutcomes.append((activeMotorNumber, activeCornerName, "STOPPED BY CTRL+C"))
 
     except Exception as error:
         print(f"Motor test stopped: {error}")
+        overallResult = "FAILED"
+        stopReason = str(error)
+        if activeMotorNumber is not None and not any(
+            outcome[0] == activeMotorNumber for outcome in motorOutcomes
+        ):
+            motorOutcomes.append((activeMotorNumber, activeCornerName, "FAILED"))
 
     finally:
-        if pixhawkConnection is not None and activeTestSequence is not None and heartbeatIsFresh():
-            stopMotor(pixhawkConnection, activeTestSequence)
+        if vehicle is not None and activeTestSequence is not None and heartbeatIsFresh(vehicle):
+            stopMotor(vehicle, activeTestSequence)
             print("Motor stop sent.")
-        if pixhawkConnection is not None:
+        if vehicle is not None:
             try:
-                pixhawkConnection.close()
+                vehicle.close()
             except Exception:
                 pass
             print("Pixhawk connection closed.")
         print("Finished.")
-        printRunSummary(motorOutcomes, logPath)
+        printRunSummary(motorOutcomes, overallResult, stopReason, logPath)
         sys.stdout = originalStandardOutput
         if logFile is not None:
             logFile.close()
