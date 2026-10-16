@@ -67,14 +67,27 @@ Interactive step-by-step terminal wizard to recalibrate the drone over SSH witho
 - **Step 4:** Runs onboard 360° sphere/ellipsoid compass calibration (`MAV_CMD_DO_START_MAG_CAL`) with a live `0% -> 100%` ASCII progress bar for every expected compass, retains the latest `MAG_CAL_REPORT`, sends `MAV_CMD_DO_ACCEPT_MAG_CAL` if needed, and verifies that the Pixhawk's stored `COMPASS_OFS*`, `COMPASS_DIA*`, and `COMPASS_ODI*` parameters match the new report.
 - **Step 5:** Offers to reboot the Pixhawk (`MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN`) so EKF3 loads the new compass offsets, then runs `MAV_CMD_RUN_PREARM_CHECKS` and checks post-ACK `SYS_STATUS` (`MAV_SYS_STATUS_PREARM_CHECK` enabled & healthy bits) + `STATUSTEXT`.
 
-### B. `oct16-2026/stationaryHoverTest.py`
+### B. `oct16-2026/beforeCalibrationMotorTest.py`
+Props-off motor check to run before compass calibration. No GPS, compass, or EKF is required. The copter stays disarmed.
+- Spins one motor at a time, in order: motor 1 (front-right, CCW, test order 1), motor 2 (back-left, CCW, test order 3), motor 3 (front-left, CW, test order 4), motor 4 (back-right, CW, test order 2).
+- Each motor runs **20 seconds**, ramping from **10 percent to 25 percent**, with a 2-second pause between motors.
+- Requires typed `YES`, a solid safety-switch LED, and propellers removed. Ctrl+C stops the motor that is spinning.
+- This script does not write a flight log.
+
+### C. `oct16-2026/afterCalibrationMotorTest.py`
+The same 20-second, 10-to-25-percent, one-motor-at-a-time test, run again after calibration.
+- Saves the next numbered file in `oct16-2026/flightLog/afterCalibration-motorTest-#1.log`, then `#2`, and so on.
+- For each motor the log records accept or refuse, commanded percent over the 20 seconds, battery voltage, battery current, and the PWM sent to that motor output, plus a run summary (`SUCCESS`, `FAILED`, or `STOPPED PART WAY`).
+
+### D. `oct16-2026/stationaryHoverTest.py`
 Updated version of `oct13-2026/hoverInOneSpot.py`:
 - Takes off in `GUIDED` to **3.0 feet** (`0.91 m`), hovers in `LOITER` in one GPS spot for **30 seconds**, and lands (`LAND`).
 - Enforces the **4.0-foot** (`1.22 m`) and **1.3 m** ceilings and an **8.0-foot** horizontal drift limit at **5 Hz** (`0.2 s` loop).
 - Configures the onboard ground-station failsafe (`FS_GCS_ENABLE = 5` Land, `FS_OPTIONS` bit 4 cleared) before arming.
 - If the Pixhawk heartbeat is lost, closes `/dev/serial0` so DroneKit stops sending GCS heartbeats and the Pixhawk lands itself after 5 seconds.
+- Saves a log at `oct16-2026/flightLog/stationaryHoverTest-YYYY-MM-DD-HHMMSS.log`.
 
-### C. `oct16-2026/flyForward10FeetLand.py`
+### E. `oct16-2026/flyForward10FeetLand.py`
 Updated version of `oct15-2026/takeOffFlyForwardLand.py` for the 4-foot mission:
 - **Logs every flight automatically** (successful, failed, or exited mid-way) to `oct16-2026/flightLog/flyForward10FeetLand-YYYY-MM-DD-HHMMSS.log` with a full `FLIGHT RUN OUTCOME SUMMARY`.
 - **Mission sequence:**
@@ -90,11 +103,19 @@ Updated version of `oct15-2026/takeOffFlyForwardLand.py` for the 4-foot mission:
 
 ## 5. What Needs to Be Done Next (Step-by-Step Instructions)
 
-### Step 1 — Physical Check Before Going Outside
+### Step 1 — Props-off motor check before calibration
+1. Remove the propellers and press the safety switch until the LED is solid.
+2. Run:
+   ```bash
+   /home/drone/dronekit-venv/bin/python3 /home/drone/Desktop/scripts/oct16-2026/beforeCalibrationMotorTest.py
+   ```
+3. Type `YES`. Watch motor 1, then 2, then 3, then 4. Each should turn the direction printed by the script while the throttle rises from 10 percent to 25 percent.
+
+### Step 2 — Physical compass check, then calibrate outside
 1. Verify the **arrow on the external GPS/compass puck** points straight forward in the **exact same direction as the arrow on the Pixhawk**.
 2. Ensure the thin GPS/compass cable is routed away from the high-current battery and 4-in-1 ESC power leads.
 
-### Step 2 — Run `reCalibrateDrone.py` Outside
+### Step 3 — Run `reCalibrateDrone.py` Outside
 1. Take the drone outside away from cars, metal tables, and concrete rebar.
 2. SSH into the Pi (`ssh drone@192.168.0.138`, password `4663`) and run:
    ```bash
@@ -108,16 +129,24 @@ Updated version of `oct15-2026/takeOffFlyForwardLand.py` for the 4-foot mission:
    - **Step 5:** Press `Y` to reboot the Pixhawk and review the Pre-Arm check output and saved log in `/home/drone/Desktop/scripts/oct16-2026/calibrationLogs/`.
 4. **Sanity check:** Point the drone's nose North and verify `Fused Heading` is near `0°`.
 
-### Step 3 — Run the 30-Second Stationary Hover Test (`stationaryHoverTest.py`)
+### Step 4 — Props-off motor check after calibration
+1. Propellers stay off. Safety switch LED solid.
+2. Run:
+   ```bash
+   /home/drone/dronekit-venv/bin/python3 /home/drone/Desktop/scripts/oct16-2026/afterCalibrationMotorTest.py
+   ```
+3. Type `YES`. Compare the new `flightLog/afterCalibration-motorTest-#N.log` with what was seen before calibration. Each motor block should say `COMPLETED`.
+
+### Step 5 — Run the 30-Second Stationary Hover Test (`stationaryHoverTest.py`)
 1. Connect a charged flight battery, place the drone on level ground in a clear outdoor area, and press the hardware safety switch.
 2. Run:
    ```bash
    /home/drone/dronekit-venv/bin/python3 /home/drone/Desktop/scripts/oct16-2026/stationaryHoverTest.py
    ```
 3. When preflight checks pass, type `YES`.
-4. Confirm it climbs to 3 feet, holds one spot cleanly in `LOITER` for 30 seconds without yaw twist or drift, and lands.
+4. Confirm it climbs to 3 feet, holds one spot cleanly in `LOITER` for 30 seconds without yaw twist or drift, and lands. The log is in `flightLog/stationaryHoverTest-YYYY-MM-DD-HHMMSS.log`.
 
-### Step 4 — Run the 4-Foot North Mission (`flyForward10FeetLand.py`)
+### Step 6 — Run the 4-Foot North Mission (`flyForward10FeetLand.py`)
 1. Once stationary hover is solid, run:
    ```bash
    /home/drone/dronekit-venv/bin/python3 /home/drone/Desktop/scripts/oct16-2026/flyForward10FeetLand.py
@@ -125,6 +154,6 @@ Updated version of `oct15-2026/takeOffFlyForwardLand.py` for the 4-foot mission:
 2. When preflight checks pass, type `YES`.
 3. It will climb to 4 ft, hover 10s, fly 10 ft North at 4 ft, hover 10s, land until propellers stop, and save its full log in `/home/drone/Desktop/scripts/oct16-2026/flightLog/`.
 
-### Step 5 — Copy Logs Back & Check Pixhawk DataFlash Log
+### Step 7 — Copy Logs Back & Check Pixhawk DataFlash Log
 1. Copy the new logs from `/home/drone/Desktop/scripts/oct16-2026/calibrationLogs/` and `/home/drone/Desktop/scripts/oct16-2026/flightLog/` back to the desktop repo.
 2. If needed, download the newest Pixhawk DataFlash `.bin` log (Log 50+) over `/dev/serial0` and verify there are no `ground mag anomaly` or `GPS Glitch or Compass error` events.
