@@ -9,8 +9,8 @@ WHAT:
 
 WHY:
     This is a check, not a flight. Seeing the stripe and the three
-    distances together shows whether the camera and the forward sensors
-    are looking at the same thing.
+    distances together shows the forward camera, the sonic sensor on the
+    power board, and the time-of-flight sensor under the drone.
 
 HOW:
     1. Open the forward camera. Do not open USB. Do not talk to the Pixhawk.
@@ -26,8 +26,10 @@ IMPORTANT:
     The target is the same brown box with the blue tape running up and down.
     A missing saved camera scale does not stop the view. The raw camera
     distance and the sensor distances still appear.
-    The time-of-flight sensor is confirmation only. A missing reading does
-    not hide the camera or the sonic distance.
+    The time-of-flight sensor faces forward and backward from the bottom of
+    the drone. A missing reading does not hide the camera or the sonic distance.
+    A different time-of-flight number is expected, because it is not looking
+    from the same place as the sonic sensor.
 """
 
 import os
@@ -141,19 +143,14 @@ def viewLines(
         stripeText,
         f"Camera raw {distanceText(rawCameraMeters)}",
         f"Camera scaled {distanceText(scaledCameraMeters)}",
-        f"Sonic {distanceText(sonicMeters)}",
-        f"Time of flight {distanceText(timeOfFlightMeters)}",
+        f"Sonic, power board, forward {distanceText(sonicMeters)}",
+        f"Time of flight, bottom, forward and backward {distanceText(timeOfFlightMeters)}",
     ]
 
-    if forward_distance_calibration.timeOfFlightAgreesWithSonic(sonicMeters, timeOfFlightMeters):
-        lines.append("Time of flight agrees with the sonic sensor")
-    elif timeOfFlightMeters is None:
-        lines.append("Time of flight is not confirming")
-    elif sonicMeters is None:
+    if timeOfFlightMeters is None:
+        lines.append("Time of flight is not answering")
+    if sonicMeters is None:
         lines.append("Sonic reading is missing")
-    else:
-        differenceMeters = abs(timeOfFlightMeters - sonicMeters)
-        lines.append(f"Time of flight differs from sonic by {differenceMeters:.2f} m")
 
     if calibration is None:
         lines.append("No saved camera scale")

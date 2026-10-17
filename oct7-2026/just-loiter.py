@@ -31,8 +31,9 @@ HOW:
     8. Switch to GUIDED and command takeoff to 4 feet.
     9. Switch to LOITER once the climb is high enough.
     10. Hold LOITER for 60 seconds. GPS holds the position.
-    11. If the saved camera calibration and the sonic snapshot are available,
-        print that forward distance as a helper. LOITER does not depend on it.
+    11. If the sensors are answering, print the sonic distance from the power
+        board and the time-of-flight distance from under the drone.
+        LOITER does not depend on either reading.
     12. Command LAND.
     13. Put the original TKOFF_SLEW_TIME back.
 
@@ -644,7 +645,7 @@ def prepareOptionalForwardSensors():
 
 def forwardSensorHelpLine(camera, calibration):
     """
-    Describe the forward sensors when they answer.
+    Describe the power-board sonic sensor and the bottom time-of-flight sensor.
     A missing reading does not change the LOITER decision.
     """
     snapshot = forward_distance_calibration.readForwardRangeSnapshot()
@@ -665,21 +666,16 @@ def forwardSensorHelpLine(camera, calibration):
             cameraMeters = None
 
     if sonicMeters is None and cameraMeters is None and timeOfFlightMeters is None:
-        return "Forward sensors quiet. LOITER is holding on GPS."
+        return "Range sensors quiet. LOITER is holding on GPS."
 
     parts = []
     if sonicMeters is not None:
-        parts.append(f"sonic {sonicMeters:.2f} m")
+        parts.append(f"sonic, power board, forward {sonicMeters:.2f} m")
     if cameraMeters is not None:
         parts.append(f"camera {cameraMeters:.2f} m")
-    if timeOfFlightMeters is not None and sonicMeters is not None:
-        if forward_distance_calibration.timeOfFlightAgreesWithSonic(sonicMeters, timeOfFlightMeters):
-            parts.append("time of flight confirms sonic")
-        else:
-            parts.append(f"time of flight {timeOfFlightMeters:.2f} m")
-    elif timeOfFlightMeters is not None:
-        parts.append(f"time of flight {timeOfFlightMeters:.2f} m")
-    return "Forward helper: " + " | ".join(parts) + ". GPS still holds LOITER."
+    if timeOfFlightMeters is not None:
+        parts.append(f"time of flight, bottom, forward and backward {timeOfFlightMeters:.2f} m")
+    return "Range helper: " + " | ".join(parts) + ". GPS still holds LOITER."
 
 
 def watchLoiterUntilItIsTimeToLand(vehicle, camera, calibration):

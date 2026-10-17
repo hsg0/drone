@@ -18,8 +18,9 @@ HOW:
         1. Pixhawk downward distance sensor, if a fresh reading arrived.
         2. Pixhawk rangefinder, if a fresh reading arrived.
         3. Barometer height above the pressure taken on the ground.
-    The sonic sensor and the time-of-flight sensor look forward. They are
-    printed when they answer. They are not used as height.
+    The sonic sensor is on the power distribution board and faces forward.
+    The time-of-flight sensor is under the drone and faces forward and backward.
+    Both are printed when they answer. Neither is used as height.
     Climb level to 1 foot, ease up to 2 feet, hold 60 seconds, then land level.
 
 IMPORTANT:
@@ -224,7 +225,7 @@ def choose_height_metres(latest, arrived_at, ground_altitude):
 
 
 def forward_range_note():
-    """Sonic and time of flight look forward. Show them, do not fly on them."""
+    """Show the power-board sonic sensor and the bottom time-of-flight sensor. Do not fly on them."""
     try:
         with open(FORWARD_RANGE_SNAPSHOT_PATH, "r", encoding="utf-8") as snapshot_file:
             snapshot = json.load(snapshot_file)
@@ -242,7 +243,10 @@ def forward_range_note():
         flight_text = "missing"
     else:
         flight_text = "{:.0f} cm".format(time_of_flight)
-    return "forward sonic {} | time of flight {}".format(sonic_text, flight_text)
+    return "sonic, power board, forward {} | time of flight, bottom, forward and backward {}".format(
+        sonic_text,
+        flight_text,
+    )
 
 
 def level_quaternion(latest):

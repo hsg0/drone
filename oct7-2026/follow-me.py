@@ -2,17 +2,19 @@
 """
 WHAT:
     Keep the copter a chosen distance in front of you.
-    The camera finds the brown box with the vertical blue stripe. The forward
-    sonic sensor measures that distance, and the saved camera scale is the
-    backup.
-    The time-of-flight sensor only confirms the distance when it is answering.
+    The camera finds the brown box with the vertical blue stripe. The sonic
+    sensor on the power distribution board measures that forward distance, and
+    the saved camera scale is the backup.
+    The time-of-flight sensor is under the drone and faces forward and
+    backward. It is printed, and it does not set the follow distance.
     Farther than the chosen distance, the copter flies forward slowly.
     Closer, it flies backward slowly. About right, it stops.
 
 WHY:
     The Pixhawk holds height and keeps the copter level. This script only
     decides forward, back, or stop. A marker is a clearer target than a person
-    on this camera.     The sonic sensor is the real forward range. The camera scale saved by
+    on this camera. The sonic sensor on the power board is the real forward
+    range. The camera scale saved by
     forward_distance_calibration.py is the backup when the sonic reading
     drops out.
     A very slow liftoff can leave one side on the ground long enough for the
@@ -52,11 +54,9 @@ IMPORTANT:
     bootDisplay.py owns the Pixhawk USB port and the RedBoard. This script
     reads /tmp/redboard-forward-distance.json and does not open USB.
 
-    The RedBoard may send one time-of-flight number, tofCm. Flight does not
-    use that number as the distance. When the number is fresh and close to
-    the sonic or camera distance, the print says it confirmed the reading.
-    When it is missing, stale, or different, the speed command stays on the
-    sonic sensor or the camera.
+    The RedBoard may send one time-of-flight number, tofCm. That sensor sits
+    under the drone and looks forward and backward, so its number is not the
+    forward distance. The speed command stays on the sonic sensor or the camera.
 
     GUIDED needs a real horizontal position. If GPS or the position estimate
     becomes unhealthy, horizontal speed goes to zero, then LAND if it stays bad.
@@ -831,29 +831,22 @@ def considerCameraScale(cameraScaleSamples, rawCameraMeters, sonicMeters):
 def chooseForwardDistanceMeters(rawCameraMeters, calibration, snapshot):
     """
     The brown box must already be in view.
-    Sonic sets the forward distance. The saved camera scale is the backup.
-    Time of flight never sets the distance. A fresh reading only adds a
-    confirmation when it is close to the distance already chosen.
+    The sonic sensor on the power board sets the forward distance.
+    The saved camera scale is the backup.
+    The time-of-flight sensor under the drone looks forward and backward,
+    so it never sets this distance.
     """
     sonicMeters = forward_distance_calibration.sonicDistanceMeters(snapshot)
-    timeOfFlightMeters = forward_distance_calibration.timeOfFlightDistanceMeters(snapshot)
     scaledCameraMeters = forward_distance_calibration.scaledCameraDistanceMeters(
         rawCameraMeters,
         calibration,
     )
 
     if sonicMeters is not None:
-        distanceMeters = sonicMeters
-        distanceSource = "sonic"
-    elif scaledCameraMeters is not None:
-        distanceMeters = scaledCameraMeters
-        distanceSource = "saved camera scale"
-    else:
-        return None, "no trusted distance"
-
-    if forward_distance_calibration.timeOfFlightAgreesWithSonic(sonicMeters, timeOfFlightMeters):
-        return distanceMeters, f"{distanceSource}, confirmed by time of flight"
-    return distanceMeters, distanceSource
+        return sonicMeters, "sonic on the power board, facing forward"
+    if scaledCameraMeters is not None:
+        return scaledCameraMeters, "saved camera scale"
+    return None, "no trusted distance"
 
 
 def forwardSpeedMetersPerSecond(distanceMeters):
@@ -884,8 +877,8 @@ def calibrationLine(rawCameraMeters, cameraScale, snapshot, distanceMeters, dist
     return (
         f"Raw camera {formatMeters(rawCameraMeters)} | "
         f"Scaled camera {formatMeters(scaledCameraMeters)} | "
-        f"Sonic {formatMeters(sonicMeters)} | "
-        f"Time of flight {formatMeters(timeOfFlightMeters)} | "
+        f"Sonic, power board, forward {formatMeters(sonicMeters)} | "
+        f"Time of flight, bottom, forward and backward {formatMeters(timeOfFlightMeters)} | "
         f"Using {formatMeters(distanceMeters)} from {distanceSource} | "
         f"scale {scaleText}"
     )

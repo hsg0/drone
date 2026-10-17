@@ -2,15 +2,18 @@
 """
 WHAT:
     Calibrate the forward camera against the sonic sensor and save the result.
-    The time-of-flight sensor is checked too. When it is answering and close
-    to the sonic reading, that agreement is saved as a note. It is not required.
+    The time-of-flight sensor is shown too. It does not need a calibration,
+    and it does not set the camera scale.
     Any later script can import this file and load the saved numbers.
 
 WHY:
-    The sonic sensor already reports centimetres. The camera only sees how
-    big the marker looks. The saved camera scale turns that picture size into
-    the same metres as the sonic sensor, so every flight script can share one
-    calibration instead of learning it again.
+    The sonic sensor is on the power distribution board and faces forward.
+    It already reports centimetres. The camera only sees how big the marker
+    looks. The saved camera scale turns that picture size into the same metres
+    as the sonic sensor, so every flight script can share one calibration
+    instead of learning it again.
+    The time-of-flight sensor is a VL53L0X under the drone. It faces forward
+    and backward and already reports centimetres, so it is not calibrated here.
 
 HOW:
     1. Open the forward camera. Do not open USB. Do not talk to the Pixhawk.
@@ -24,19 +27,22 @@ IMPORTANT:
     be running, because it owns the RedBoard and writes the range snapshot.
     This script does not open the Pixhawk USB port or the RedBoard USB port.
 
-    The camera must point forward. The target is the brown box with the blue
-    tape running from top to bottom. Keep the whole blue stripe in the picture.
-    BLUE_STRIPE_LENGTH_METERS is a stand-in length. The sonic sensor sets the
-    real scale, so the same stripe must be used every time.
+    The camera must point forward, the same way as the sonic sensor. The target
+    is the brown box with the blue tape running from top to bottom. Keep the
+    whole blue stripe in the picture. BLUE_STRIPE_LENGTH_METERS is a stand-in
+    length. The sonic sensor sets the real scale, so the same stripe must be
+    used every time.
+    The time-of-flight sensor looks forward and backward from the bottom of
+    the drone. Its number can be different from the sonic number. That is
+    expected.
 
     The saved file remembers the marker and the camera size. A later script
     that asks for a different marker or a different picture size is given no
     calibration, instead of a scale that belongs to another setup.
 
     A missing time-of-flight reading does not block the save. The sonic sensor
-    is the calibration reference. Flight scripts must still read the live
-    time-of-flight sensor. The saved note only says whether it was answering
-    and agreeing during this calibration.
+    is the calibration reference. The saved note only says whether the
+    time-of-flight sensor was answering during this calibration.
 
 Import from any script on the Pi. This file lives in the oct7-2026 folder:
 
@@ -133,6 +139,11 @@ FORWARD_RANGE_SNAPSHOT_PATH = "/tmp/redboard-forward-distance.json"
 FORWARD_RANGE_STALE_AFTER_SECONDS = 2.0
 SNAPSHOT_FUTURE_SKEW_ALLOWANCE_SECONDS = 1.0
 
+# The sonic sensor is mounted on the power distribution board and looks forward.
+SONIC_PLACEMENT = "power distribution board, facing forward"
+# The VL53L0X is mounted under the drone and looks both ways along the nose.
+TIME_OF_FLIGHT_PLACEMENT = "bottom of the drone, facing forward and backward"
+
 SONIC_MINIMUM_CENTIMETERS = 15.0
 SONIC_MAXIMUM_CENTIMETERS = 400.0
 SONIC_SNAPSHOT_FIELD_NAMES = (
@@ -148,8 +159,6 @@ TIME_OF_FLIGHT_SNAPSHOT_FIELD_NAMES = (
     "tofCm",
 )
 
-# Close enough to remember that the time-of-flight sensor confirmed the sonic reading.
-RANGE_AGREEMENT_METERS = 0.40
 CENTIMETERS_PER_METER = 100.0
 
 lastSavedCalibrationRefusalReason = None
@@ -209,13 +218,6 @@ def timeOfFlightDistanceMeters(snapshot):
         TIME_OF_FLIGHT_MINIMUM_CENTIMETERS,
         TIME_OF_FLIGHT_MAXIMUM_CENTIMETERS,
     )
-
-
-def timeOfFlightAgreesWithSonic(sonicMeters, timeOfFlightMeters):
-    """A missing time-of-flight reading is not agreement and not a failure."""
-    if sonicMeters is None or timeOfFlightMeters is None:
-        return False
-    return abs(sonicMeters - timeOfFlightMeters) <= RANGE_AGREEMENT_METERS
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +504,7 @@ def loadCameraScale(
     return float(calibration["cameraScale"])
 
 
-def saveForwardDistanceCalibration(cameraScale, sampleCount, timeOfFlightReadingCount, timeOfFlightAgreementCount):
+def saveForwardDistanceCalibration(cameraScale, sampleCount, timeOfFlightReadingCount):
     """Write the finished calibration. A temporary file is renamed into place."""
     savedCalibration = {
         "calibrationVersion": CALIBRATION_VERSION,
@@ -516,7 +518,8 @@ def saveForwardDistanceCalibration(cameraScale, sampleCount, timeOfFlightReading
         "cameraHorizontalFieldOfViewDegrees": CAMERA_HORIZONTAL_FIELD_OF_VIEW_DEGREES,
         "timeOfFlightWasSeen": timeOfFlightReadingCount > 0,
         "timeOfFlightReadingCount": int(timeOfFlightReadingCount),
-        "timeOfFlightAgreementCount": int(timeOfFlightAgreementCount),
+        "sonicPlacement": SONIC_PLACEMENT,
+        "timeOfFlightPlacement": TIME_OF_FLIGHT_PLACEMENT,
         "savedAtSeconds": time.time(),
     }
     os.makedirs(os.path.dirname(SAVED_CALIBRATION_PATH), exist_ok=True)
@@ -540,14 +543,15 @@ def collectSamplesUntilSave(camera):
     print()
     print("SENSOR CALIBRATION")
     print("Hold the brown box a few feet in front of the nose, with the blue stripe running up and down.")
-    print("bootDisplay.py must be running so the sonic snapshot is fresh.")
+    print("The sonic sensor is on the power distribution board and faces forward.")
+    print("The time-of-flight sensor is under the drone and faces forward and backward.")
+    print("bootDisplay.py must be running so both sensor readings stay fresh.")
     print(f"{CAMERA_SCALE_SAMPLE_COUNT} good camera and sonic samples are required.")
     print(f"Type {SAVE_WORD} to remember them. The copter will not move.")
 
     cameraScale = None
     cameraScaleSamples = []
     timeOfFlightReadingCount = 0
-    timeOfFlightAgreementCount = 0
     lastPrintedAtSeconds = 0
 
     while True:
@@ -559,7 +563,7 @@ def collectSamplesUntilSave(camera):
             elif cameraScale is None:
                 print("Calibration is not complete. Nothing was saved.")
             else:
-                return cameraScale, len(cameraScaleSamples), timeOfFlightReadingCount, timeOfFlightAgreementCount
+                return cameraScale, len(cameraScaleSamples), timeOfFlightReadingCount
 
         if nowSeconds - lastPrintedAtSeconds < STATUS_PRINT_INTERVAL_SECONDS:
             time.sleep(POLL_INTERVAL_SECONDS)
@@ -571,8 +575,6 @@ def collectSamplesUntilSave(camera):
         timeOfFlightMeters = timeOfFlightDistanceMeters(snapshot)
         if timeOfFlightMeters is not None:
             timeOfFlightReadingCount += 1
-        if timeOfFlightAgreesWithSonic(sonicMeters, timeOfFlightMeters):
-            timeOfFlightAgreementCount += 1
 
         if snapshot is None:
             print("No fresh forward-range snapshot. Leave bootDisplay.py running.")
@@ -588,7 +590,10 @@ def collectSamplesUntilSave(camera):
             print("Camera distance could not be calculated. No calibration sample added.")
         elif len(cameraScaleSamples) >= CAMERA_SCALE_SAMPLE_COUNT:
             cameraScale = medianOf(cameraScaleSamples[:CAMERA_SCALE_SAMPLE_COUNT])
-            print(f"Sonic {formatMeters(sonicMeters)} | Time of flight {formatMeters(timeOfFlightMeters)}")
+            print(
+                f"Sonic, {SONIC_PLACEMENT}: {formatMeters(sonicMeters)} | "
+                f"Time of flight, {TIME_OF_FLIGHT_PLACEMENT}: {formatMeters(timeOfFlightMeters)}"
+            )
             print(
                 f"Camera scale locked at {cameraScale:.3f}. "
                 f"Type {SAVE_WORD} to remember it."
@@ -605,8 +610,8 @@ def collectSamplesUntilSave(camera):
             print(
                 f"Raw camera {formatMeters(rawCameraMeters)} | "
                 f"Scaled camera {formatMeters(scaledMeters)} | "
-                f"Sonic {formatMeters(sonicMeters)} | "
-                f"Time of flight {formatMeters(timeOfFlightMeters)}"
+                f"Sonic, {SONIC_PLACEMENT}: {formatMeters(sonicMeters)} | "
+                f"Time of flight, {TIME_OF_FLIGHT_PLACEMENT}: {formatMeters(timeOfFlightMeters)}"
             )
             print(f"Calibration samples: {sampleCount}/{CAMERA_SCALE_SAMPLE_COUNT}")
             if cameraScale is not None:
@@ -627,24 +632,18 @@ def main():
             cameraScale,
             sampleCount,
             timeOfFlightReadingCount,
-            timeOfFlightAgreementCount,
         ) = collectSamplesUntilSave(camera)
         savedCalibration = saveForwardDistanceCalibration(
             cameraScale,
             sampleCount,
             timeOfFlightReadingCount,
-            timeOfFlightAgreementCount,
         )
         print()
         print(f"Saved camera scale: {savedCalibration['cameraScale']:.3f}")
         print(f"Saved file: {SAVED_CALIBRATION_PATH}")
         print(f"Samples collected: {savedCalibration['sampleCount']}")
         if savedCalibration["timeOfFlightWasSeen"]:
-            print("Time of flight was answering.")
-            print(
-                f"It agreed with the sonic sensor {timeOfFlightAgreementCount} time"
-                f"{'' if timeOfFlightAgreementCount == 1 else 's'}."
-            )
+            print("Time of flight was answering. It does not change the camera scale.")
         else:
             print("Time of flight was not answering. The camera scale was still saved.")
         print("Other scripts can import this file and reuse the saved calibration.")
