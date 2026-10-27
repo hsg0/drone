@@ -1,0 +1,21 @@
+Autonomous Drone Flight Path Planner & Hover Runner
+====================================================
+
+Quick Install on Raspberry Pi / Linux:
+--------------------------------------
+1. Unzip the package:
+     unzip flight_path_package.zip
+     cd flight_path_package
+
+2. Run the interactive installer (it will ask for your drone's name,
+   Pixhawk serial port, battery 3S/4S voltages, Wi-Fi SSIDs, and 4G fallback):
+     chmod +x install.sh
+     ./install.sh
+
+3. Open the Flight Path Web UI:
+   - Double-click the "Flight Path" icon on the Pi Desktop, OR run:
+     python3 ~/Desktop/scripts/flight_path_planner.py serve --open
+
+4. Run the initial 8-ft / 60-s Hover & RC Stick Test:
+   - Use the teal button in the Web UI, OR run:
+     python3 ~/Desktop/scripts/flight_path_planner.py hover --confirm

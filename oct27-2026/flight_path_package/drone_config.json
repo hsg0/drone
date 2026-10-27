@@ -1,0 +1,22 @@
+{
+  "drone_name": "Flight1",
+  "serial_port": "/dev/ttyAMA0",
+  "serial_baud": 57600,
+  "mav_sysid": 1,
+  "mav_compid": 1,
+  "gcs_sysid": 255,
+  "gcs_compid": 190,
+  "web_port": 8080,
+  "battery_cells": 3,
+  "min_takeoff_volt": 10.8,
+  "low_volt_cutoff": 10.3,
+  "crit_volt_cutoff": 9.9,
+  "rc_pitch_forward_is_high_pwm": true,
+  "rc_roll_right_is_high_pwm": true,
+  "rc_yaw_right_is_high_pwm": true,
+  "rc_resume_idle_s": 5.0,
+  "primary_wifi_ssid": "House-Gill-2.4",
+  "secondary_wifi_ssid": "G_suite_01",
+  "enable_4g_fallback": true,
+  "cellular_interface": "auto"
+}

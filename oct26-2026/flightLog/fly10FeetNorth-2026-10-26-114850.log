@@ -1,0 +1,203 @@
+Flight log file : /home/drone/Desktop/scripts/oct26-2026/flightLog/fly10FeetNorth-2026-10-26-114850.log
+Run started at  : 2026-10-26 11:48:50 PDT
+====================================================================
+TAKE OFF TO 4 FT -> HOVER AT 5 FT (10S) -> FLY NORTH 10 FT AT 5 FT -> HOVER 5 FT (10S) -> LAND
+====================================================================
+Initial takeoff step : 4.0 ft (1.22 m)
+Hover & flight height: 5.0 ft (1.52 m)
+Safety ceiling       : 10.0 ft (3.05 m)
+Stationary hovers    : 10 seconds at 5 ft, twice
+North leg            : 10 ft North at 0.4 m/s (5 ft height)
+
+Connecting to Pixhawk on /dev/serial0 at 57600 baud (downloading parameters)...
+Pixhawk connected.
+Requested GPS, height, attitude, and position-health streams.
+Checking preflight health (Frame, Compass, GPS, EKF, PreArm, Attitude)...
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+Waiting. 3D fix, 6 satellites. EKF3 is still aligning GPS and compass (keep waiting ~30-60s).
+  Pixhawk: EKF3 IMU0 origin set
+  Pixhawk: EKF3 IMU0 is using GPS
+  Pixhawk: Field Elevation Set: 2m
+Preflight checks passed.
+FRAME_CLASS 1 | FRAME_TYPE 1 | satellites 6 | heading +7.5 deg | saved trim (+2.34, -0.80) deg.
+Type YES to take off to 4 ft, come to hover at 5 ft for 10s, fly 10 ft North at 5 ft, hover at 5 ft for 10s, and land: Type YES to take off to 4 ft, come to hover at 5 ft for 10s, fly 10 ft North at 5 ft, hover at 5 ft for 10s, and land: YES
+TKOFF_SLEW_TIME: original 2.00s | takeoff 1.00s
+Onboard failsafe is set to Land if the Pi connection is lost.
+Requesting GUIDED.
+Mode confirmed: GUIDED
+Arming motors.
+Motors armed. Propellers spinning.
+Taking off to 4.0 feet (1.22 m), then coming to hover at 5.0 feet (1.52 m).
+Climbing to 4 ft takeoff point | -0.01 m (-0.03 ft)
+Climbing to 4 ft takeoff point | -0.00 m (-0.01 ft)
+Climbing to 4 ft takeoff point | -0.01 m (-0.02 ft)
+Climbing to 4 ft takeoff point | 0.39 m (1.29 ft)
+Reached 4-foot takeoff height (1.31 m / 4.30 ft) — rising to 5-foot hover height...
+Climbing from 4 ft to 5 ft hover height | 1.46 m (4.80 ft)
+Reached 5-foot hover altitude: 1.46 m (4.80 ft).
+Settling at 5 feet in GUIDED for 2 seconds before switching to LOITER...
+  Pixhawk: EKF3 IMU0 MAG0 ground mag anomaly, yaw re-aligned
+Requesting LOITER.
+Mode confirmed: LOITER
+First hover (5 ft) started (holding 5 ft for 10 seconds).
+First hover (5 ft) | 1.47 m (4.81 ft) | drift 0.0 ft | remaining 10 s
+First hover (5 ft) | 1.51 m (4.95 ft) | drift 0.9 ft | remaining 9 s
+First hover (5 ft) | 1.48 m (4.86 ft) | drift 1.1 ft | remaining 8 s
+First hover (5 ft) | 1.49 m (4.88 ft) | drift 1.0 ft | remaining 7 s
+First hover (5 ft) | 1.50 m (4.93 ft) | drift 1.0 ft | remaining 6 s
+First hover (5 ft) | 1.48 m (4.85 ft) | drift 1.0 ft | remaining 5 s
+First hover (5 ft) | 1.48 m (4.86 ft) | drift 0.8 ft | remaining 4 s
+First hover (5 ft) | 1.48 m (4.84 ft) | drift 0.6 ft | remaining 3 s
+First hover (5 ft) | 1.50 m (4.93 ft) | drift 1.0 ft | remaining 2 s
+First hover (5 ft) | 1.54 m (5.05 ft) | drift 0.5 ft | remaining 1 s
+First hover (5 ft) completed.
+Requesting GUIDED.
+Mode confirmed: GUIDED
+Nose is already facing Geographic North (heading -10.7 deg).
+Flying North 10 ft at 0.4 m/s while holding 5 ft height.
+Flying North | 0.0/10 ft North | +0.0 ft East | 1.50 m (4.92 ft)
+Flying North | 0.6/10 ft North | -0.1 ft East | 1.48 m (4.84 ft)
+Flying North | 1.8/10 ft North | +0.0 ft East | 1.51 m (4.97 ft)
+Flying North | 3.0/10 ft North | +0.1 ft East | 1.56 m (5.13 ft)
+Flying North | 4.5/10 ft North | +0.3 ft East | 1.55 m (5.09 ft)
+Flying North | 6.1/10 ft North | +0.3 ft East | 1.52 m (4.98 ft)
+Flying North | 7.6/10 ft North | +0.4 ft East | 1.54 m (5.04 ft)
+Flying North | 8.9/10 ft North | +0.1 ft East | 1.51 m (4.96 ft)
+10 feet North reached | 10.1 ft North | -0.4 ft East | 1.51 m (4.96 ft)
+North move stopped cleanly.
+Requesting LOITER.
+Mode confirmed: LOITER
+Second hover (5 ft) started (holding 5 ft for 10 seconds).
+Second hover (5 ft) | 1.50 m (4.91 ft) | drift 0.0 ft | remaining 10 s
+Second hover (5 ft) | 1.53 m (5.02 ft) | drift 0.3 ft | remaining 9 s
+Second hover (5 ft) | 1.55 m (5.10 ft) | drift 0.3 ft | remaining 8 s
+Second hover (5 ft) | 1.54 m (5.05 ft) | drift 0.8 ft | remaining 7 s
+Second hover (5 ft) | 1.56 m (5.12 ft) | drift 0.8 ft | remaining 6 s
+Second hover (5 ft) | 1.59 m (5.23 ft) | drift 0.8 ft | remaining 5 s
+Second hover (5 ft) | 1.54 m (5.06 ft) | drift 0.5 ft | remaining 4 s
+Second hover (5 ft) | 1.53 m (5.02 ft) | drift 0.4 ft | remaining 3 s
+Second hover (5 ft) | 1.52 m (5.00 ft) | drift 0.6 ft | remaining 2 s
+Second hover (5 ft) | 1.56 m (5.10 ft) | drift 0.8 ft | remaining 1 s
+Second hover (5 ft) completed.
+Landing.
+Requesting LAND.
+Mode confirmed: LAND
+Waiting for landing and propeller stop. 1.53 m (5.01 ft)
+Waiting for landing and propeller stop. 1.16 m (3.79 ft)
+Waiting for landing and propeller stop. 0.65 m (2.12 ft)
+Waiting for landing and propeller stop. 0.14 m (0.45 ft)
+Waiting for landing and propeller stop. -0.31 m (-1.01 ft)
+Waiting for landing and propeller stop. -0.21 m (-0.69 ft)
+Waiting for landing and propeller stop. -0.11 m (-0.37 ft)
+Landed safely. Motors disarmed and propellers stopped.
+Flight complete.
+Ground-station failsafe settings restored.
+Restoring TKOFF_SLEW_TIME to 2.00s.
+TKOFF_SLEW_TIME restored.
+Command cable closed.
+Script finished.
+
+====================================================================
+FLIGHT RUN OUTCOME SUMMARY
+====================================================================
+Overall Outcome                : SUCCESS
+Started At                     : 2026-10-26 11:48:50 PDT
+Finished At                    : 2026-10-26 11:51:40 PDT
+Preflight & Land Failsafe      : SUCCESS (Preflight passed, FS_GCS_ENABLE=5 Land set)
+Step 1 (Takeoff 4ft -> 5ft)    : SUCCESS (1.44 m (4.74 ft))
+Step 2 (First Hover 5ft, 10s)  : SUCCESS (10s completed, max drift 1.2 ft)
+Step 3 (Fly North 10ft @ 5ft)  : SUCCESS (10.1 ft North (-0.4 ft East))
+Step 4 (Second Hover 5ft, 10s) : SUCCESS (10s completed, max drift 0.8 ft)
+Step 5 (Land & Disarm)         : SUCCESS (Landed, motors disarmed, propellers stopped)
+Max Altitude Recorded          : 1.59 m (5.23 ft)
+North Distance Recorded        : 10.1 ft North (-0.4 ft East)
+Saved Flight Log               : /home/drone/Desktop/scripts/oct26-2026/flightLog/fly10FeetNorth-2026-10-26-114850.log
+====================================================================

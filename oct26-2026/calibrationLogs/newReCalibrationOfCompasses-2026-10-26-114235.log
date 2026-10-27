@@ -1,0 +1,182 @@
+====================================================================
+FAST COMPASS RECALIBRATION (INTERNAL = PRIMARY, GPS = SECONDARY)
+====================================================================
+Log file: /home/drone/Desktop/scripts/oct26-2026/calibrationLogs/newReCalibrationOfCompasses-2026-10-26-114235.log
+
+Connecting to Pixhawk on /dev/serial0 at 57600 baud...
+Detected Internal Board Compass : ID 658945 (setting as PRIMARY / Priority 1)
+Detected External GPS Compass   : ID 466441 (setting as SECONDARY / Priority 2)
+Saved compass priority (Internal=Primary, GPS=Secondary) and relaxed variance tolerances.
+Compass priority order changed — rebooting Pixhawk now so the new order is active...
+Rebooting Pixhawk...
+Connecting to Pixhawk on /dev/serial0 at 57600 baud...
+Pixhawk rebooted with Internal Compass as Primary.
+
+Current Compass Readings Before Calibration:
+  Primary (Priority 1)   : X= 151 Y=  48 Z= 424 | Heading= +17.6 deg
+  Secondary (Priority 2) : X= 153 Y=  10 Z= 476 | Heading=  +3.7 deg
+  Heading Difference     : +13.9 deg
+  Attitude               : Roll=+2.57 deg | Pitch=-0.39 deg | Yaw=-6.1 deg
+  EKF Compass Variance   : 0.0000
+
+====================================================================
+SPIN CALIBRATION (6 POSITIONS)
+====================================================================
+  Position 1 (  0% -  17%): FLAT & LEVEL         -> turn 360 deg
+  Position 2 ( 17% -  34%): NOSE DOWN            -> turn 360 deg
+  Position 3 ( 34% -  50%): NOSE UP              -> turn 360 deg
+  Position 4 ( 50% -  67%): LEFT SIDE DOWN       -> turn 360 deg
+  Position 5 ( 67% -  84%): RIGHT SIDE DOWN      -> turn 360 deg
+  Position 6 ( 84% - 100%): UPSIDE DOWN          -> turn 360 deg
+
+Press Enter (or type Y) to start spinning, or S to skip spin: 
+>>> POSITION 1 OF 6: Hold FLAT & LEVEL and slowly turn 360 degrees...
+
+>>> POSITION 2 OF 6: Point NOSE DOWN and turn 360 degrees...
+
+>>> POSITION 3 OF 6: Point NOSE UP and turn 360 degrees...
+
+>>> POSITION 4 OF 6: Tilt LEFT SIDE DOWN and turn 360 degrees...
+
+>>> POSITION 5 OF 6: Tilt RIGHT SIDE DOWN and turn 360 degrees...
+
+>>> POSITION 6 OF 6: Flip UPSIDE DOWN and turn 360 degrees to 100%!
+
+  Pixhawk: MagCal: No location, fix_radius skipped
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Pixhawk: MagCal: No location, fix_radius skipped
+
+  Secondary (GPS) Report: SUCCESS | fitness=9.00 | offsets=(+395.5, -1.7, -117.9)
+
+  Primary (Internal) Report: SUCCESS | fitness=9.04 | offsets=(-126.3, +86.6, -7.7)
+
+Primary (Internal) compass calibrated and saved!
+Secondary (GPS) compass calibrated and saved!
+
+Rebooting Pixhawk automatically so EKF3 loads the calibrated compass settings...
+Rebooting Pixhawk...
+Connecting to Pixhawk on /dev/serial0 at 57600 baud...
+Pixhawk rebooted and ready! Final sensor snapshot:
+Done — ready for flight.

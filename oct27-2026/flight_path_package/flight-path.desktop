@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Flight Path
+Comment=Open the path map. If the planner is already running, this only opens the browser.
+Exec=python3 /home/flight1/Desktop/scripts/flight_path_planner.py serve --open
+Terminal=false
+StartupNotify=false
+Categories=Utility;
