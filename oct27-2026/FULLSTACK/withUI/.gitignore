@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+DATABASE/sqlDB/*.sqlite
+DATABASE/sqlDB/*.sqlite-journal
+DATABASE/sqlDB/*.sqlite-wal
+DATABASE/sqlDB/*.sqlite-shm

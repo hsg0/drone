@@ -1,0 +1,246 @@
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 48px;
+}
+
+.dashboardPhoto {
+  width: 100%;
+  height: 420px;
+  object-fit: cover;
+  object-position: center 30%;
+  display: block;
+}
+
+.buttonGroup {
+  margin-top: 12px;
+}
+
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.brightButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 280px;
+  min-height: 72px;
+  padding: 16px 22px;
+  border-radius: 16px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-decoration: none;
+  text-align: center;
+}
+
+.brightButton:focus-visible {
+  outline: 3px solid #ffffff;
+  outline-offset: 3px;
+}
+
+.calibrationButton {
+  color: #042028;
+  background: #2ee6ff;
+  box-shadow: 0 0 22px rgba(46, 230, 255, 0.85);
+}
+
+.calibrationButton:hover {
+  background: #7df3ff;
+}
+
+.flightButton {
+  color: #f7fbff;
+  background: #3d7dff;
+  box-shadow: 0 0 22px rgba(61, 125, 255, 0.9);
+}
+
+.flightButton:hover {
+  background: #6ea0ff;
+}
+
+.motorButton {
+  color: #2a1600;
+  background: #ffb020;
+  box-shadow: 0 0 22px rgba(255, 176, 32, 0.9);
+}
+
+.motorButton:hover {
+  background: #ffc85a;
+}
+
+.motorList {
+  width: min(760px, 100%);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.motorList li {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(215, 228, 240, 0.2);
+}
+
+.motorList .currentMotor {
+  border: 3px solid #ffb020;
+  border-radius: 12px;
+  background: rgba(255, 176, 32, 0.16);
+}
+
+.thrustControl {
+  width: min(760px, 100%);
+  text-align: left;
+}
+
+.thrustControl input {
+  width: 100%;
+  accent-color: #ffb020;
+}
+
+.flightMap {
+  width: min(900px, 100%);
+  height: 480px;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.planFacts {
+  width: min(760px, 100%);
+  text-align: left;
+}
+
+.planFacts label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.planFacts input {
+  width: 120px;
+}
+
+.planWarning {
+  color: #ffb4b4;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 48px 24px 64px;
+}
+
+button.brightButton {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.brightButton:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.backendStatus {
+  margin: 0 16px 8px;
+}
+
+.logList {
+  width: min(720px, 100%);
+}
+
+.logList ul {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  text-align: left;
+}
+
+.logList li {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(215, 228, 240, 0.25);
+}
+
+.currentDirection {
+  width: min(760px, 100%);
+  padding: 20px;
+  border: 3px solid #2ee6ff;
+  border-radius: 16px;
+  background: rgba(46, 230, 255, 0.12);
+}
+
+.currentDirection p {
+  margin: 10px auto 0;
+  font-size: 22px;
+}
+
+.liveLine {
+  font-size: 16px;
+  opacity: 0.85;
+}
+
+.percentGroup,
+.positionList,
+.savedResult {
+  width: min(760px, 100%);
+}
+
+.percentBar {
+  display: grid;
+  grid-template-columns: 150px 1fr 52px;
+  gap: 12px;
+  align-items: center;
+  margin-top: 10px;
+  text-align: left;
+}
+
+.percentTrack {
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(215, 228, 240, 0.18);
+  overflow: hidden;
+}
+
+.percentFill {
+  height: 100%;
+  background: #2ee6ff;
+}
+
+.positionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.positionList li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(215, 228, 240, 0.2);
+}
+
+.positionList .currentPosition {
+  border: 3px solid #2ee6ff;
+  border-radius: 12px;
+  background: rgba(46, 230, 255, 0.16);
+}
+
+.savedResult {
+  text-align: left;
+}
+
+.savedResult ul {
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
