@@ -1,17 +1,22 @@
 # WHAT — save a map plan, arm, disarm, or fly that plan.
-# WHY — the page picks two points first. The copter does not move until Arm,
-#       and it does not take off until YES.
+# WHY — the page picks the path first. The copter does not move until Arm,
+#       and it does not take off until YES. A perimeter flight stays inside
+#       the drawn shape and lands after 5 minutes.
 # HOW — Turf distance is checked again here. Arm applies the Oct 26 preflight
-#       and onboard Land failsafe gates. Fly takes off, settles, flies along
-#       the saved bearing, brakes for 2 seconds, and lands until propellers stop.
-# IMPORTANT — there is no force-arm and no force-disarm. A leg over 1000 feet
-#             is refused. YES does not arm. Arm does not take off.
+#       and onboard Land failsafe gates. The straight plan flies one bearing.
+#       The perimeter plan flies about 6 feet inside the drawn corners.
+# IMPORTANT — there is no force-arm and no force-disarm. A straight path over
+#             1000 feet is refused. A perimeter over 10000 feet is refused.
+#             YES does not arm. Arm does not take off.
 
 import asyncio
 import json
 import math
 import os
+import threading
 import time
+
+import socketio
 
 from models.flightlogs import readFlightLog, recordFromFlightLog, saveFlightLog
 
@@ -22,6 +27,7 @@ CONNECTION_TIMEOUT_SECONDS = 60
 FEET_PER_METER = 3.28084
 METERS_PER_DEGREE_OF_LATITUDE = 111319.5
 MAXIMUM_DISTANCE_FEET = 1000.0
+MAXIMUM_PERIMETER_FEET = 10000.0
 DEFAULT_HEIGHT_FEET = 5.0
 MAXIMUM_HEIGHT_FEET = 50.0
 MINIMUM_HEIGHT_FEET = 3.0
@@ -30,6 +36,16 @@ MAXIMUM_SPEED_METERS_PER_SECOND = 2.0
 MINIMUM_SPEED_METERS_PER_SECOND = 0.2
 CEILING_MARGIN_FEET = 10.0
 CROSS_TRACK_LIMIT_FEET = 50.0
+PERIMETER_FLIGHT_SECONDS = 300.0
+INSET_FEET = 6.0
+MINIMUM_PERIMETER_CORNERS = 3
+MAXIMUM_PERIMETER_CORNERS = 12
+CORNER_ARRIVAL_METERS = 0.6
+DEFAULT_CORRIDOR_WIDTH_FEET = 20.0
+MINIMUM_CORRIDOR_WIDTH_FEET = 6.0
+MAXIMUM_CORRIDOR_WIDTH_FEET = 200.0
+# A second click on a corner, or a click back on the start, is the same place.
+SAME_CORNER_FEET = 8.0
 TAKEOFF_REACHED_FRACTION = 0.95
 TAKEOFF_SETTLE_SECONDS = 2.0
 SETTLE_AFTER_MOVE_SECONDS = 2.0
@@ -78,6 +94,70 @@ MAXIMUM_VERTICAL_CORRECTION_METERS_PER_SECOND = 0.25
 flightPlanVehicle = None
 flightPlanIsRunning = False
 flightPlanGuard = asyncio.Lock()
+perimeterProgressLock = threading.Lock()
+perimeterProgressLoop = None
+perimeterProgress = {
+    "phase": "idle",
+    "latitude": None,
+    "longitude": None,
+    "heightFeet": None,
+    "lockPoint": None,
+    "secondsRemaining": None,
+    "insideFence": None,
+    "insideCorridor": None,
+    "outcome": None,
+    "stopReason": None,
+}
+lastPerimeterProgressAt = 0.0
+
+perimeterSocket = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+
+
+@perimeterSocket.event
+async def connect(sid, _environ):
+    await perimeterSocket.emit("perimeter-progress", readPerimeterProgress(), to=sid)
+
+
+def rememberPerimeterLoop(loop):
+    global perimeterProgressLoop
+    perimeterProgressLoop = loop
+
+
+def readPerimeterProgress():
+    with perimeterProgressLock:
+        return dict(perimeterProgress)
+
+
+def notePerimeterProgress(vehicle=None, force=False, **fields):
+    """Remember the latest flight note and push it to the page. The flight thread calls this."""
+    global lastPerimeterProgressAt
+    latitude = None
+    longitude = None
+    heightFeet = None
+    if vehicle is not None:
+        location = getattr(vehicle, "location", None)
+        frame = getattr(location, "global_relative_frame", None) if location is not None else None
+        if frame is not None and frame.lat is not None and frame.lon is not None:
+            latitude = float(frame.lat)
+            longitude = float(frame.lon)
+            if frame.alt is not None and math.isfinite(float(frame.alt)):
+                heightFeet = round(float(frame.alt) * FEET_PER_METER, 1)
+    now = time.monotonic()
+    with perimeterProgressLock:
+        if latitude is not None:
+            perimeterProgress["latitude"] = latitude
+            perimeterProgress["longitude"] = longitude
+            perimeterProgress["heightFeet"] = heightFeet
+        perimeterProgress.update(fields)
+        snapshot = dict(perimeterProgress)
+        if not force and now - lastPerimeterProgressAt < 0.5:
+            return
+        lastPerimeterProgressAt = now
+    if perimeterProgressLoop is None:
+        return
+    def pushSnapshot(progressSnapshot=snapshot):
+        asyncio.create_task(perimeterSocket.emit("perimeter-progress", progressSnapshot))
+    perimeterProgressLoop.call_soon_threadsafe(pushSnapshot)
 
 
 async def saveFlightPlan(request):
@@ -164,6 +244,51 @@ async def flyFlightPlan(request):
             flightPlanIsRunning = False
 
 
+async def savePerimeterPlan(request):
+    try:
+        body = await requestJson(request)
+        plan = confirmedPerimeter(body)
+    except Exception as error:
+        return failedPlan(str(error))
+    plan["scriptName"] = "perimeterFlight"
+    plan["outcome"] = "SAVED"
+    plan["id"] = saveFlightLog(plan)
+    return plan
+
+
+async def flyPerimeterPlan(request):
+    global flightPlanIsRunning
+    try:
+        body = await requestJson(request)
+    except Exception as error:
+        return failedPlan(str(error))
+    if str(body.get("confirm", "")).strip() != "YES":
+        return failedPlan("The request did not say YES. The copter was not taken off.")
+    plan = savedPerimeter(body.get("planId"))
+    if plan is None:
+        return failedPlan("That saved perimeter was not found.")
+    if plan.get("perimeterFeet", MAXIMUM_PERIMETER_FEET + 1) > MAXIMUM_PERIMETER_FEET:
+        return failedPlan("That saved perimeter is longer than 10000 feet.")
+    busy = cableIsBusy()
+    if busy:
+        return failedPlan(busy)
+    async with flightPlanGuard:
+        if flightPlanIsRunning:
+            return failedPlan("A flight plan is already using the command cable.")
+        flightPlanIsRunning = True
+    try:
+        result = await asyncio.to_thread(flySavedPerimeter, plan)
+        result["id"] = saveFlightLog(result)
+        return result
+    except Exception as error:
+        failed = failedPlan(str(error))
+        failed["scriptName"] = "perimeterFlight"
+        return failed
+    finally:
+        async with flightPlanGuard:
+            flightPlanIsRunning = False
+
+
 async def requestJson(request):
     rawBody = await request.body()
     if not rawBody:
@@ -231,6 +356,391 @@ def savedPlan(planId):
     if "pointA" not in details or "pointB" not in details:
         return None
     return details | {"id": record["id"]}
+
+
+def savedPerimeter(planId):
+    flightLog = readFlightLog(planId)
+    if flightLog is None:
+        return None
+    record = recordFromFlightLog(flightLog)
+    details = record.get("details")
+    if not isinstance(details, dict) or details.get("scriptName") != "perimeterFlight":
+        return None
+    if not isinstance(details.get("corners"), list) or not isinstance(details.get("insetCorners"), list):
+        return None
+    return details | {"id": record["id"]}
+
+
+def confirmedPerimeter(body):
+    rawCorners = body.get("corners")
+    if not isinstance(rawCorners, list):
+        raise RuntimeError("The perimeter corners are missing.")
+    corners = [coordinatePair(corner, index + 1) for index, corner in enumerate(rawCorners)]
+    corners = cornersWithoutStackedClicks(corners)
+    if len(corners) < MINIMUM_PERIMETER_CORNERS:
+        raise RuntimeError("The corners are too close together to make a fence. Click farther apart.")
+    if len(corners) > MAXIMUM_PERIMETER_CORNERS:
+        raise RuntimeError(f"Draw no more than {MAXIMUM_PERIMETER_CORNERS} corners.")
+    perimeterFeet = perimeterLengthFeet(corners)
+    if perimeterFeet > MAXIMUM_PERIMETER_FEET:
+        raise RuntimeError(
+            f"The perimeter is {perimeterFeet:.0f} feet. The limit is {MAXIMUM_PERIMETER_FEET:.0f} feet."
+        )
+    heightFeet = boundedNumber(
+        body.get("heightFeet", DEFAULT_HEIGHT_FEET),
+        MINIMUM_HEIGHT_FEET,
+        MAXIMUM_HEIGHT_FEET,
+        "Height",
+    )
+    speedMetersPerSecond = boundedNumber(
+        body.get("speedMetersPerSecond", DEFAULT_SPEED_METERS_PER_SECOND),
+        MINIMUM_SPEED_METERS_PER_SECOND,
+        MAXIMUM_SPEED_METERS_PER_SECOND,
+        "Speed",
+    )
+    corridorWidthFeet = boundedNumber(
+        body.get("corridorWidthFeet", DEFAULT_CORRIDOR_WIDTH_FEET),
+        MINIMUM_CORRIDOR_WIDTH_FEET,
+        MAXIMUM_CORRIDOR_WIDTH_FEET,
+        "Corridor width",
+    )
+    insetCorners, insetFeet = cornersInsetTowardMiddle(corners)
+    return {
+        "corners": corners,
+        "insetCorners": insetCorners,
+        "insetFeet": insetFeet,
+        "perimeterFeet": round(perimeterFeet, 1),
+        "heightFeet": round(heightFeet, 1),
+        "speedMetersPerSecond": round(speedMetersPerSecond, 2),
+        "corridorWidthFeet": round(corridorWidthFeet, 1),
+        "flightSeconds": PERIMETER_FLIGHT_SECONDS,
+    }
+
+
+def flySavedPerimeter(plan):
+    vehicle = flightPlanVehicle
+    landingWasStarted = False
+    result = {
+        "scriptName": "perimeterFlight",
+        "started": True,
+        "planId": plan.get("id"),
+        "perimeterFeet": plan.get("perimeterFeet"),
+        "heightFeet": plan.get("heightFeet"),
+        "speedMetersPerSecond": plan.get("speedMetersPerSecond"),
+        "corridorWidthFeet": plan.get("corridorWidthFeet", DEFAULT_CORRIDOR_WIDTH_FEET),
+        "flightSeconds": PERIMETER_FLIGHT_SECONDS,
+        "maximumAltitudeReachedText": "none",
+        "outcome": "FAILED",
+        "stopReason": None,
+    }
+    try:
+        if vehicle is None or not heartbeatIsFresh(vehicle) or not vehicle.armed:
+            raise RuntimeError("The copter is not armed. Press Arm before YES.")
+        from dronekit import VehicleMode
+        heightFeet = float(plan["heightFeet"])
+        heightMeters = heightFeet / FEET_PER_METER
+        ceilingMeters = (heightFeet + CEILING_MARGIN_FEET) / FEET_PER_METER
+        speed = float(plan["speedMetersPerSecond"])
+        corridorWidthFeet = float(plan.get("corridorWidthFeet", DEFAULT_CORRIDOR_WIDTH_FEET))
+        corridorHalfMeters = (corridorWidthFeet / 2.0) / FEET_PER_METER
+        drawnCorners = plan["corners"]
+        insetCorners = plan["insetCorners"]
+        notePerimeterProgress(vehicle, force=True, phase="taking-off", lockPoint=None, secondsRemaining=PERIMETER_FLIGHT_SECONDS, outcome=None, stopReason=None)
+        if not copterIsInsidePerimeter(vehicle, drawnCorners):
+            raise RuntimeError("The copter is outside the drawn perimeter. It was not taken off.")
+
+        setMode(vehicle, "GUIDED", VehicleMode)
+        print(f"Taking off to {heightFeet:.0f} feet.")
+        vehicle.simple_takeoff(heightMeters)
+        takeoffStarted = time.monotonic()
+        while True:
+            altitudeMeters = checkGuidedFlight(vehicle, ceilingMeters, result)
+            notePerimeterProgress(vehicle, phase="taking-off", secondsRemaining=PERIMETER_FLIGHT_SECONDS)
+            if altitudeMeters is not None and altitudeMeters >= heightMeters * TAKEOFF_REACHED_FRACTION:
+                break
+            if time.monotonic() - takeoffStarted > TAKEOFF_TIMEOUT_SECONDS:
+                raise RuntimeError("Takeoff timed out.")
+            time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
+
+        settleStarted = time.monotonic()
+        while time.monotonic() - settleStarted < TAKEOFF_SETTLE_SECONDS:
+            checkGuidedFlight(vehicle, ceilingMeters, result)
+            notePerimeterProgress(vehicle, phase="taking-off", secondsRemaining=PERIMETER_FLIGHT_SECONDS)
+            time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
+
+        print("Flying the inside edge for 5 minutes.")
+        patternStarted = time.monotonic()
+        cornerIndex = 0
+        while time.monotonic() - patternStarted < PERIMETER_FLIGHT_SECONDS:
+            checkGuidedFlight(vehicle, ceilingMeters, result)
+            insideFence = copterIsInsidePerimeter(vehicle, drawnCorners)
+            distanceFromLineMeters = distanceToFlightLineMeters(vehicle, insetCorners)
+            insideCorridor = distanceFromLineMeters <= corridorHalfMeters
+            secondsRemaining = max(0, int(PERIMETER_FLIGHT_SECONDS - (time.monotonic() - patternStarted)))
+            notePerimeterProgress(
+                vehicle,
+                phase="flying",
+                lockPoint=cornerIndex + 1,
+                secondsRemaining=secondsRemaining,
+                insideFence=insideFence,
+                insideCorridor=insideCorridor,
+            )
+            if not insideFence:
+                raise RuntimeError("The copter left the drawn perimeter.")
+            if not insideCorridor:
+                raise RuntimeError("The copter left the flight corridor.")
+            target = insetCorners[cornerIndex]
+            northMeters, eastMeters = metersFromCopterTo(vehicle, target["lat"], target["lon"])
+            distanceMeters = math.hypot(northMeters, eastMeters)
+            if distanceMeters <= CORNER_ARRIVAL_METERS:
+                cornerIndex = (cornerIndex + 1) % len(insetCorners)
+                continue
+            sendVelocity(
+                vehicle,
+                speed * northMeters / distanceMeters,
+                speed * eastMeters / distanceMeters,
+                downSpeedForHeight(vehicle, heightMeters),
+            )
+            time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
+
+        brakeStarted = time.monotonic()
+        while time.monotonic() - brakeStarted < SETTLE_AFTER_MOVE_SECONDS:
+            checkGuidedFlight(vehicle, ceilingMeters, result)
+            sendVelocity(vehicle, 0.0, 0.0, downSpeedForHeight(vehicle, heightMeters))
+            time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
+        sendVelocity(vehicle, 0.0, 0.0, 0.0)
+
+        notePerimeterProgress(vehicle, force=True, phase="landing", secondsRemaining=0)
+        landingWasStarted = True
+        landAndWaitForDisarm(vehicle, VehicleMode, result)
+        if result["outcome"] != "ONBOARD FAILSAFE":
+            result["outcome"] = "SUCCESS"
+            result["stopReason"] = "Flew the inside edge for 5 minutes, then landed."
+        notePerimeterProgress(
+            vehicle,
+            force=True,
+            phase="finished",
+            outcome=result["outcome"],
+            stopReason=result["stopReason"],
+            secondsRemaining=0,
+        )
+        return result
+    except Exception as error:
+        result["stopReason"] = str(error)
+        notePerimeterProgress(vehicle, force=True, phase="finished", outcome="FAILED", stopReason=str(error))
+        return result
+    finally:
+        if vehicle is not None:
+            if getattr(vehicle, "armed", False) and not landingWasStarted:
+                try:
+                    from dronekit import VehicleMode
+                    landAndWaitForDisarm(vehicle, VehicleMode, result)
+                except Exception as landError:
+                    print(f"Emergency land did not confirm disarm: {landError}")
+            restoreAndClosePlanVehicle(vehicle)
+
+
+def cornersWithoutStackedClicks(corners):
+    """Drop a click that lands on the previous corner, and a click back on the start."""
+    if not corners:
+        return []
+    keptCorners = [corners[0]]
+    for corner in corners[1:]:
+        previousCorner = keptCorners[-1]
+        separationFeet = haversineFeet(previousCorner["lat"], previousCorner["lon"], corner["lat"], corner["lon"])
+        if separationFeet >= SAME_CORNER_FEET:
+            keptCorners.append(corner)
+    if len(keptCorners) >= 2:
+        closingFeet = haversineFeet(
+            keptCorners[0]["lat"], keptCorners[0]["lon"], keptCorners[-1]["lat"], keptCorners[-1]["lon"]
+        )
+        if closingFeet < SAME_CORNER_FEET:
+            keptCorners = keptCorners[:-1]
+    return keptCorners
+
+
+def samePlace(firstCorner, secondCorner):
+    return (
+        abs(firstCorner["lat"] - secondCorner["lat"]) < 0.0000001
+        and abs(firstCorner["lon"] - secondCorner["lon"]) < 0.0000001
+    )
+
+
+def perimeterLengthFeet(corners):
+    totalFeet = 0.0
+    for index, corner in enumerate(corners):
+        nextCorner = corners[(index + 1) % len(corners)]
+        totalFeet += haversineFeet(corner["lat"], corner["lon"], nextCorner["lat"], nextCorner["lon"])
+    return totalFeet
+
+
+def cornersInsetTowardMiddle(corners):
+    """Build a flight path inside the drawing. Use 6 feet when it fits, otherwise the largest inset that stays inside."""
+    origin = corners[0]
+    localCorners = [localNorthEastMeters(corner["lat"], corner["lon"], origin["lat"], origin["lon"]) for corner in corners]
+    drawnPairs = [(east, north) for north, east in localCorners]
+    for insetFeet in (6, 5, 4, 3, 2, 1):
+        insetLocal = insetCornersByFeet(localCorners, drawnPairs, insetFeet)
+        if insetLocal is not None and flightPathStaysInside(insetLocal, drawnPairs):
+            return latLonCorners(origin, insetLocal), insetFeet
+    raise RuntimeError("The perimeter is too small to fly inside it.")
+
+
+def insetCornersByFeet(localCorners, drawnPairs, insetFeet):
+    """Shift each corner inward along the fence angle. A corner that would leave the fence is rejected."""
+    insetMeters = insetFeet / FEET_PER_METER
+    edgeNormals = [inwardEdgeNormal(localCorners, drawnPairs, index) for index in range(len(localCorners))]
+    insetLocal = []
+    for index, (north, east) in enumerate(localCorners):
+        previousNormal = edgeNormals[(index - 1) % len(edgeNormals)]
+        currentNormal = edgeNormals[index]
+        bisectorNorth = previousNormal[0] + currentNormal[0]
+        bisectorEast = previousNormal[1] + currentNormal[1]
+        bisectorLength = math.hypot(bisectorNorth, bisectorEast)
+        if bisectorLength < 0.2:
+            bisectorNorth, bisectorEast = currentNormal
+        else:
+            bisectorNorth /= bisectorLength
+            bisectorEast /= bisectorLength
+        cornerDot = previousNormal[0] * currentNormal[0] + previousNormal[1] * currentNormal[1]
+        halfAngleSine = math.sqrt(max(0.0, (1.0 - cornerDot) / 2.0))
+        moveMeters = insetMeters / max(halfAngleSine, 0.35)
+        movedNorth = north + bisectorNorth * moveMeters
+        movedEast = east + bisectorEast * moveMeters
+        if not localPointIsInside(movedEast, movedNorth, drawnPairs):
+            return None
+        insetLocal.append((movedNorth, movedEast))
+    return insetLocal
+
+
+def inwardEdgeNormal(localCorners, drawnPairs, index):
+    """Unit step from the middle of one edge toward the inside of the fence."""
+    north, east = localCorners[index]
+    nextNorth, nextEast = localCorners[(index + 1) % len(localCorners)]
+    edgeNorth = nextNorth - north
+    edgeEast = nextEast - east
+    edgeLength = math.hypot(edgeNorth, edgeEast) or 1.0
+    leftNorth = -edgeEast / edgeLength
+    leftEast = edgeNorth / edgeLength
+    middleNorth = (north + nextNorth) / 2.0
+    middleEast = (east + nextEast) / 2.0
+    if localPointIsInside(middleEast + leftEast * 2.0, middleNorth + leftNorth * 2.0, drawnPairs, countEdge=False):
+        return (leftNorth, leftEast)
+    return (-leftNorth, -leftEast)
+
+
+def flightPathStaysInside(insetLocal, drawnPairs):
+    for index, (north, east) in enumerate(insetLocal):
+        nextNorth, nextEast = insetLocal[(index + 1) % len(insetLocal)]
+        for step in (0.25, 0.5, 0.75):
+            sampleEast = east + (nextEast - east) * step
+            sampleNorth = north + (nextNorth - north) * step
+            if not localPointIsInside(sampleEast, sampleNorth, drawnPairs):
+                return False
+    return True
+
+
+def latLonCorners(origin, localCorners):
+    return [
+        {
+            "lat": origin["lat"] + north / METERS_PER_DEGREE_OF_LATITUDE,
+            "lon": origin["lon"] + east / (
+                METERS_PER_DEGREE_OF_LATITUDE * math.cos(math.radians(origin["lat"]))
+            ),
+        }
+        for north, east in localCorners
+    ]
+
+
+def copterIsInsidePerimeter(vehicle, corners):
+    location = vehicle.location.global_relative_frame
+    if location is None or location.lat is None or location.lon is None:
+        raise RuntimeError("GPS position was lost.")
+    origin = corners[0]
+    north, east = localNorthEastMeters(float(location.lat), float(location.lon), origin["lat"], origin["lon"])
+    drawnPairs = [
+        localNorthEastMeters(corner["lat"], corner["lon"], origin["lat"], origin["lon"])
+        for corner in corners
+    ]
+    return localPointIsInside(east, north, [(pointEast, pointNorth) for pointNorth, pointEast in drawnPairs])
+
+
+def distanceToFlightLineMeters(vehicle, insetCorners):
+    """How far the copter is from the nearest part of the inside flight line."""
+    location = vehicle.location.global_relative_frame
+    if location is None or location.lat is None or location.lon is None:
+        raise RuntimeError("GPS position was lost.")
+    origin = insetCorners[0]
+    north, east = localNorthEastMeters(float(location.lat), float(location.lon), origin["lat"], origin["lon"])
+    localCorners = [
+        localNorthEastMeters(corner["lat"], corner["lon"], origin["lat"], origin["lon"])
+        for corner in insetCorners
+    ]
+    nearestMeters = None
+    for index, (cornerNorth, cornerEast) in enumerate(localCorners):
+        nextNorth, nextEast = localCorners[(index + 1) % len(localCorners)]
+        edgeMeters = distanceToSegmentMeters(east, north, cornerEast, cornerNorth, nextEast, nextNorth)
+        if nearestMeters is None or edgeMeters < nearestMeters:
+            nearestMeters = edgeMeters
+    return nearestMeters
+
+
+def metersFromCopterTo(vehicle, latitude, longitude):
+    location = vehicle.location.global_relative_frame
+    if location is None or location.lat is None or location.lon is None:
+        raise RuntimeError("GPS position was lost.")
+    return localNorthEastMeters(latitude, longitude, float(location.lat), float(location.lon))
+
+
+def localNorthEastMeters(latitude, longitude, originLatitude, originLongitude):
+    northMeters = (latitude - originLatitude) * METERS_PER_DEGREE_OF_LATITUDE
+    eastMeters = (
+        (longitude - originLongitude)
+        * METERS_PER_DEGREE_OF_LATITUDE
+        * math.cos(math.radians(originLatitude))
+    )
+    return northMeters, eastMeters
+
+
+def localPointIsInside(east, north, polygonEastNorth, countEdge=True):
+    """Ray cast. A point on the drawn line counts as inside so a tiny GPS wobble does not land the copter."""
+    if countEdge and pointIsNearPerimeterEdge(east, north, polygonEastNorth):
+        return True
+    inside = False
+    previousIndex = len(polygonEastNorth) - 1
+    for index, (edgeEast, edgeNorth) in enumerate(polygonEastNorth):
+        previousEast, previousNorth = polygonEastNorth[previousIndex]
+        crossesNorth = (edgeNorth > north) != (previousNorth > north)
+        if crossesNorth:
+            crossedEast = (previousEast - edgeEast) * (north - edgeNorth) / (previousNorth - edgeNorth) + edgeEast
+            if east < crossedEast:
+                inside = not inside
+        previousIndex = index
+    return inside
+
+
+def pointIsNearPerimeterEdge(east, north, polygonEastNorth):
+    edgeMarginMeters = 0.4
+    previousIndex = len(polygonEastNorth) - 1
+    for index, (edgeEast, edgeNorth) in enumerate(polygonEastNorth):
+        previousEast, previousNorth = polygonEastNorth[previousIndex]
+        if distanceToSegmentMeters(east, north, previousEast, previousNorth, edgeEast, edgeNorth) <= edgeMarginMeters:
+            return True
+        previousIndex = index
+    return False
+
+
+def distanceToSegmentMeters(east, north, startEast, startNorth, endEast, endNorth):
+    segmentEast = endEast - startEast
+    segmentNorth = endNorth - startNorth
+    lengthSquared = segmentEast * segmentEast + segmentNorth * segmentNorth
+    if lengthSquared == 0:
+        return math.hypot(east - startEast, north - startNorth)
+    share = ((east - startEast) * segmentEast + (north - startNorth) * segmentNorth) / lengthSquared
+    share = max(0.0, min(1.0, share))
+    closestEast = startEast + share * segmentEast
+    closestNorth = startNorth + share * segmentNorth
+    return math.hypot(east - closestEast, north - closestNorth)
 
 
 def armCopter():

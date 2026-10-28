@@ -12,12 +12,15 @@ import asyncio
 from contextlib import asynccontextmanager
 
 import uvicorn
+import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from controllers.calibration import rememberProgressLoop
+from controllers.flightPlan import perimeterSocket, rememberPerimeterLoop
 from models.flightlogs import createFlightLogTables, databaseFilePath
 from routes.calibration import calibrationRouter
+from routes.camera import cameraRouter
 from routes.flight import flightRouter
 from routes.flightPlan import flightPlanRouter
 from routes.motorTest import motorTestRouter
@@ -32,7 +35,9 @@ LOCAL_PAGE_ORIGIN_PATTERN = (
 
 @asynccontextmanager
 async def backendLifespan(_app):
-    rememberProgressLoop(asyncio.get_running_loop())
+    loop = asyncio.get_running_loop()
+    rememberProgressLoop(loop)
+    rememberPerimeterLoop(loop)
     try:
         createFlightLogTables()
         print(f"Flight log database: {databaseFilePath}")
@@ -46,6 +51,7 @@ app.include_router(flightRouter)
 app.include_router(flightPlanRouter)
 app.include_router(calibrationRouter)
 app.include_router(motorTestRouter)
+app.include_router(cameraRouter)
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,6 +60,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+socketApp = socketio.ASGIApp(perimeterSocket, other_asgi_app=app)
 
 
 @app.get("/")
@@ -64,7 +72,7 @@ def readHealth():
 def main():
     print(f"withUI backend at http://localhost:{LISTEN_PORT}")
     uvicorn.run(
-        "main:app",
+        "main:socketApp",
         host=LISTEN_HOST,
         port=LISTEN_PORT,
         reload=True,

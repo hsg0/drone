@@ -2,7 +2,7 @@ import axios from "axios"
 
 const defaultHost = typeof window !== "undefined" && window.location.hostname ? window.location.hostname : "127.0.0.1"
 const configuredUrl = import.meta.env.VITE_BACKEND_URL
-const backendBaseUrl =
+export const backendBaseUrl =
   configuredUrl && defaultHost !== "127.0.0.1" && defaultHost !== "localhost"
     ? configuredUrl.replace(/127\.0\.0\.1|localhost/, defaultHost)
     : configuredUrl || `http://${defaultHost}:4020`
@@ -68,6 +68,14 @@ export function flySavedFlightPlan(planId) {
   return postToBackend("/flight-plans/fly", { confirm: "YES", planId })
 }
 
+export function savePerimeterPlan(plan) {
+  return postToBackend("/flight-plans/perimeter", plan)
+}
+
+export function flySavedPerimeter(planId) {
+  return postToBackend("/flight-plans/perimeter/fly", { confirm: "YES", planId })
+}
+
 export function spinOneMotor(testOrder, percent) {
   return postToBackend("/motortest/one", { confirm: "YES", testOrder, percent })
 }
@@ -82,6 +90,18 @@ export function stopMotorTest() {
 
 export function readMotorTestProgress() {
   return getFromBackend("/motortest/progress")
+}
+
+export function readSeenGesture() {
+  return getFromBackend("/camera/seen")
+}
+
+export function offerCameraConnection(offer) {
+  return postToBackend("/camera/webrtc/offer", offer)
+}
+
+export function closeCameraConnection() {
+  return postToBackend("/camera/webrtc/close", {})
 }
 
 export function watchCalibrationProgress(onProgress, onConnection) {

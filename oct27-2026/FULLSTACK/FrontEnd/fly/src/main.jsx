@@ -11,6 +11,8 @@ import Fly10EastWestNorthSouthTurns from "./droneflight/fly10ewns360.jsx"
 import OneMotorAtATime from "./motortest/oneMotorAtATime.jsx"
 import All4MotorsTest from "./motortest/all4MotorsTest.jsx"
 import FlightPlan from "./geoPlanner/flightPlan.jsx"
+import HumanGestureControl from "./gestureControl/humanGestureControl.jsx"
+import AutonomousFiveMinutes from "./autonomous/autonomous5mins.jsx"
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
@@ -24,6 +26,8 @@ createRoot(document.getElementById("root")).render(
         <Route path="/fly/fly10ewns" element={<Fly10EastWestNorthSouth />} />
         <Route path="/fly/fly10ewns360" element={<Fly10EastWestNorthSouthTurns />} />
         <Route path="/geo/flight-plan" element={<FlightPlan />} />
+        <Route path="/gesture/human" element={<HumanGestureControl />} />
+        <Route path="/autonomous/5-minutes" element={<AutonomousFiveMinutes />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>,

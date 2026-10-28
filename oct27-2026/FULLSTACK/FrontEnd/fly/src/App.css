@@ -75,6 +75,33 @@
   background: #ffc85a;
 }
 
+.gestureButton {
+  color: #04140c;
+  background: #3dff8a;
+  box-shadow: 0 0 22px rgba(61, 255, 138, 0.85);
+}
+
+.gestureButton:hover {
+  background: #8dffb8;
+}
+
+.autonomousButton {
+  color: #1a0830;
+  background: #d58bff;
+  box-shadow: 0 0 22px rgba(213, 139, 255, 0.85);
+}
+
+.autonomousButton:hover {
+  background: #e6b6ff;
+}
+
+.cameraPicture {
+  width: min(900px, 100%);
+  border-radius: 16px;
+  background: #000000;
+  display: block;
+}
+
 .motorList {
   width: min(760px, 100%);
   list-style: none;

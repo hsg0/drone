@@ -74,6 +74,24 @@ function App() {
           </Link>
         </div>
       </section>
+
+      <section className="buttonGroup">
+        <h2>Gesture control</h2>
+        <div className="buttonRow">
+          <Link className="brightButton gestureButton" to="/gesture/human">
+            Human gesture control
+          </Link>
+        </div>
+      </section>
+
+      <section className="buttonGroup">
+        <h2>Autonomous</h2>
+        <div className="buttonRow">
+          <Link className="brightButton autonomousButton" to="/autonomous/5-minutes">
+            5 minute perimeter
+          </Link>
+        </div>
+      </section>
     </main>
   )
 }
