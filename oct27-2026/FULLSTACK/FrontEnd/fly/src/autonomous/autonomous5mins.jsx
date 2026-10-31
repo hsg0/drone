@@ -21,6 +21,7 @@ function AutonomousFiveMinutes() {
   const [corridorWidthFeet, setCorridorWidthFeet] = useState(20)
   const [savedPlan, setSavedPlan] = useState(null)
   const [armed, setArmed] = useState(false)
+  const [armRequestIsRunning, setArmRequestIsRunning] = useState(false)
   const [flightIsRunning, setFlightIsRunning] = useState(false)
   const [flightStatus, setFlightStatus] = useState("Click each corner, then close the perimeter.")
   const [pictureSource, setPictureSource] = useState("off")
@@ -129,6 +130,9 @@ function AutonomousFiveMinutes() {
   }
 
   async function armCopter() {
+    if (armRequestIsRunning) return
+    setArmRequestIsRunning(true)
+    setFlightStatus("Checking the copter before arming. This can take a moment.")
     try {
       const result = await armForFlightPlan()
       const isNowArmed = Boolean(result.armed)
@@ -137,6 +141,8 @@ function AutonomousFiveMinutes() {
       setFlightStatus(result.stopReason || result.outcome || "Arm finished.")
     } catch (error) {
       setFlightStatus(error?.message || "The backend did not answer.")
+    } finally {
+      setArmRequestIsRunning(false)
     }
   }
 
@@ -361,8 +367,8 @@ function AutonomousFiveMinutes() {
         <button className="brightButton autonomousButton" type="button" onClick={savePlan} disabled={!canSave}>
           Save perimeter
         </button>
-        <button className="brightButton autonomousButton" type="button" onClick={armCopter} disabled={!savedPlan || armed || flightIsRunning}>
-          Arm
+        <button className="brightButton autonomousButton" type="button" onClick={armCopter} disabled={!savedPlan || armed || flightIsRunning || armRequestIsRunning}>
+          {armRequestIsRunning ? "Checking..." : "Arm"}
         </button>
         <button className="brightButton autonomousButton" type="button" onClick={disarmCopter} disabled={!armed || flightIsRunning}>
           Disarm

@@ -7,7 +7,7 @@
 
 .dashboardPhoto {
   width: 100%;
-  height: 420px;
+  height: 160px;
   object-fit: cover;
   object-position: center 30%;
   display: block;
@@ -95,6 +95,16 @@
   background: #e6b6ff;
 }
 
+.objectDetectionButton {
+  color: #2a0808;
+  background: #ff6b6b;
+  box-shadow: 0 0 22px rgba(255, 107, 107, 0.85);
+}
+
+.objectDetectionButton:hover {
+  background: #ff9a9a;
+}
+
 .cameraPicture {
   width: min(900px, 100%);
   border-radius: 16px;
@@ -152,6 +162,13 @@
 
 .planFacts input {
   width: 120px;
+}
+
+.telemetryColumns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 28px;
+  text-align: left;
 }
 
 .planWarning {
@@ -270,4 +287,29 @@ button.brightButton:disabled {
 .savedResult ul {
   margin: 12px 0 0;
   padding-left: 18px;
+}
+
+.flightSteps {
+  margin-top: 16px;
+}
+
+.flightSteps ol {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.stopButton {
+  background: #8d1d1d;
+  color: #fff7f7;
+}
+
+.homeButton {
+  background: #1d4e8d;
+  color: #f7fbff;
+}
+
+.clearButton {
+  background: #3d4a57;
+  color: #f7fbff;
+  margin-bottom: 12px;
 }

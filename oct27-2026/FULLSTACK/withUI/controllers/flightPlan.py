@@ -183,7 +183,7 @@ async def armFlightPlan(request):
         return failedPlan(busy)
     async with flightPlanGuard:
         if flightPlanIsRunning:
-            return failedPlan("A flight plan is already using the command cable.")
+            return failedPlan("Arm is already checking the copter. Wait for that check to finish.")
         flightPlanIsRunning = True
     try:
         result = await asyncio.to_thread(armCopter)
@@ -755,6 +755,13 @@ def armCopter():
                 "outcome": "ALREADY ARMED",
                 "stopReason": "The copter is already armed. It was not taken off.",
             }
+        from controllers.flightController import ensureBoardCompassIsPrimary
+        vehicle = ensureBoardCompassIsPrimary(
+            vehicle,
+            rebootPlanVehicle,
+            print,
+            confirmPlanParameter,
+        )
         waitUntilPlanPreflightPasses(vehicle)
         configurePlanFailsafeAndSlew(vehicle)
         blocker = preflightBlocker(vehicle)
@@ -784,6 +791,28 @@ def armCopter():
         if vehicle is not None:
             restoreAndClosePlanVehicle(vehicle)
         raise
+
+
+def rebootPlanVehicle(vehicle):
+    """Reboot after a compass-order change, then open the command cable again."""
+    from pymavlink import mavutil as middleMan
+    from controllers.flightController import COMPASS_PRIORITY_REBOOT_WAIT_SECONDS
+    vehicle._master.mav.command_long_send(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        middleMan.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+        0,
+        1, 0, 0, 0, 0, 0, 0,
+    )
+    vehicle.commandCableClosed = True
+    try:
+        vehicle.close()
+    except Exception:
+        pass
+    clearVehicle()
+    time.sleep(COMPASS_PRIORITY_REBOOT_WAIT_SECONDS)
+    print("Pixhawk rebooted with the board compass as primary.")
+    return connectForPlan()
 
 
 def disarmAndCloseConnection():
@@ -990,6 +1019,8 @@ def attachPlanListenersAndStreams(vehicle, middleMan):
         text = str(text).strip("\x00").strip()
         if text and "prearm" in text.lower():
             latestTelemetry["lastPrearmReason"] = text
+        if text and "battery 1 low voltage" in text.lower():
+            latestTelemetry["sawFalseBatteryWarning"] = True
 
     intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
     for messageName in FLIGHT_MESSAGE_NAMES:
@@ -1011,8 +1042,16 @@ def attachPlanListenersAndStreams(vehicle, middleMan):
 
 
 def waitUntilPlanPreflightPasses(vehicle):
+    from controllers.flightController import pixhawkBatteryVoltageText, releaseFalseBatteryFailsafe
+    print(pixhawkBatteryVoltageText(vehicle))
     started = time.monotonic()
     while True:
+        releaseFalseBatteryFailsafe(
+            vehicle,
+            vehicle.planTelemetry,
+            print,
+            confirmPlanParameter,
+        )
         blocker = preflightBlocker(vehicle)
         if blocker is None:
             return

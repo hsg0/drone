@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from controllers.calibration import rememberProgressLoop
+from controllers.flightController import rememberFlightProgressLoop
 from controllers.flightPlan import perimeterSocket, rememberPerimeterLoop
 from models.flightlogs import createFlightLogTables, databaseFilePath
 from routes.calibration import calibrationRouter
@@ -37,6 +38,7 @@ LOCAL_PAGE_ORIGIN_PATTERN = (
 async def backendLifespan(_app):
     loop = asyncio.get_running_loop()
     rememberProgressLoop(loop)
+    rememberFlightProgressLoop(loop)
     rememberPerimeterLoop(loop)
     try:
         createFlightLogTables()

@@ -10,6 +10,7 @@ import asyncio
 import json
 import math
 import os
+import threading
 import time
 
 from models.flightlogs import readFlightLog, readFlightLogs, recordFromFlightLog, saveFlightLog
@@ -105,6 +106,15 @@ QUAD_X_FRAME_TYPE = 1
 MINIMUM_GPS_FIX_TYPE = 3
 MINIMUM_SATELLITE_COUNT = 5
 UNKNOWN_SATELLITE_COUNT = 255
+FALSE_BATTERY_WARNING = "battery 1 low voltage"
+BATTERY_LOW_FAILSAFE_ACTION_PARAMETER = "BATT_FS_LOW_ACT"
+BATTERY_CRITICAL_FAILSAFE_ACTION_PARAMETER = "BATT_FS_CRT_ACT"
+BATTERY_FAILSAFE_ACTION_NONE = 0
+COMPASS_PRIORITY_REBOOT_WAIT_SECONDS = 12.0
+COMPASS_SLOT_PARAMETERS = (
+    ("COMPASS_DEV_ID", "COMPASS_EXTERNAL"),
+    ("COMPASS_DEV_ID2", "COMPASS_EXTERN2"),
+)
 SKIP_COMPASS_OR_GPS_MASK = 4 | 8 | 4096
 MAXIMUM_COMPASS_VARIANCE = 0.50
 PREARM_POLL_INTERVAL_SECONDS = 3.0
@@ -138,6 +148,37 @@ CARDINAL_LEGS = (
 
 flightIsRunning = False
 flightGuard = asyncio.Lock()
+flightStopRequested = False
+flightReturnHomeRequested = False
+flightClearRequested = False
+activeFlightVehicle = None
+activeFlightOutcome = None
+flightProgressLock = threading.RLock()
+
+
+class FlightStopRequested(Exception):
+    """The pilot pressed Stop. The mission must land and end."""
+
+
+class FlightReturnHomeRequested(Exception):
+    """The pilot pressed Return to Home. Fly back to the takeoff spot and land."""
+
+
+class FlightClearRequested(Exception):
+    """The pilot pressed Clear flights. End the request before takeoff."""
+
+flightProgressLoop = None
+flightProgressQueues = set()
+latestFlightProgress = {
+    "running": False,
+    "scriptName": None,
+    "outcome": None,
+    "latestLine": None,
+    "repeatCount": 0,
+    "lines": [],
+    "stopReason": None,
+    "startedAt": None,
+}
 
 
 async def fly10FeetEWNSLand(request):
@@ -183,7 +224,9 @@ async def fly10FeetEWNSLand(request):
                     "started": False,
                     "outcome": "A FLIGHT PLAN IS ALREADY USING THE COMMAND CABLE",
                 }
+            resetFlightControlFlags()
             flightIsRunning = True
+        beginFlightProgress("fly10FeetEWNSLand")
 
         try:
             flightOutcome = await asyncio.to_thread(runFly10FeetEastWestNorthSouthLand)
@@ -192,6 +235,7 @@ async def fly10FeetEWNSLand(request):
                 flightIsRunning = False
 
         flightOutcome["id"] = saveFlightLog(flightOutcome)
+        publishFlightSnapshot(flightOutcome, running=False)
         return flightOutcome
     except Exception as error:
         print(f"fly10FeetEWNSLand did not finish: {error}")
@@ -218,7 +262,17 @@ async def confirmationTextFromRequest(request):
     return ""
 
 
+def resetFlightControlFlags():
+    global flightStopRequested, flightReturnHomeRequested, flightClearRequested, activeFlightVehicle, activeFlightOutcome
+    flightStopRequested = False
+    flightReturnHomeRequested = False
+    flightClearRequested = False
+    activeFlightVehicle = None
+    activeFlightOutcome = None
+
+
 def runFly10FeetEastWestNorthSouthLand():
+    global activeFlightVehicle, activeFlightOutcome
     flightOutcome = {
         "scriptName": "fly10FeetEWNSLand",
         "started": True,
@@ -230,6 +284,7 @@ def runFly10FeetEastWestNorthSouthLand():
         "lines": [],
         "steps": {},
     }
+    activeFlightOutcome = flightOutcome
     vehicle = None
     originalTakeoffSlewSeconds = None
     savedFailsafe = None
@@ -261,17 +316,21 @@ def runFly10FeetEastWestNorthSouthLand():
         runPrearmCommandId = getattr(middleMan.mavlink, "MAV_CMD_RUN_PREARM_CHECKS", 401)
 
         writeFlightLine(flightOutcome, f"Connecting to Pixhawk on {PIXHAWK_PORT} at {PIXHAWK_BAUD} baud.")
-        vehicle = connect(
-            PIXHAWK_PORT,
-            baud=PIXHAWK_BAUD,
-            wait_ready=True,
-            timeout=CONNECTION_TIMEOUT_SECONDS,
-            source_system=GROUND_STATION_SYSTEM_ID,
-        )
+        vehicle = connectUntilCleared(connect, flightOutcome)
         if vehicle._master.target_component == 0:
             vehicle._master.target_component = 1
         writeFlightLine(flightOutcome, "Pixhawk connected.")
-        latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit)
+        activeFlightVehicle = vehicle
+        activeFlightOutcome = flightOutcome
+        raiseIfFlightStopped()
+        vehicle = ensureBoardCompassIsPrimary(
+            vehicle,
+            lambda currentVehicle: rebootFlightVehicle(currentVehicle, connect, flightOutcome),
+            lambda text: writeFlightLine(flightOutcome, text),
+            confirmPixhawkParameter,
+        )
+        activeFlightVehicle = vehicle
+        latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
         waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
 
@@ -317,6 +376,37 @@ def runFly10FeetEastWestNorthSouthLand():
         writeFlightLine(flightOutcome, "Flight interrupted.")
         flightOutcome["outcome"] = "EXITED MID-WAY"
         flightOutcome["stopReason"] = "Interrupted."
+    except FlightClearRequested:
+        flightOutcome["outcome"] = "CLEARED BEFORE FLYING"
+        flightOutcome["stopReason"] = "Clear flights pressed. The request ended before takeoff."
+        writeFlightLine(flightOutcome, "Flight request cleared before takeoff.")
+    except FlightReturnHomeRequested:
+        flightOutcome["outcome"] = "RETURNED HOME"
+        flightOutcome["stopReason"] = "Return to home pressed. The copter was sent back to the takeoff spot to land."
+        writeFlightLine(flightOutcome, "Return to home pressed. Flying back to the takeoff spot, then landing.")
+        if vehicle is not None and getattr(vehicle, "armed", False) and not landingWasStarted:
+            landingWasStarted = True
+            try:
+                from dronekit import VehicleMode
+                returnHomeUntilLanded(vehicle, flightOutcome, VehicleMode)
+            except Exception as landError:
+                writeFlightLine(flightOutcome, f"Return home did not finish: {landError}. Landing here.")
+                try:
+                    from dronekit import VehicleMode
+                    landUntilPropellersStop(vehicle, flightOutcome, VehicleMode)
+                except Exception as secondError:
+                    writeFlightLine(flightOutcome, f"Landing after return home did not finish: {secondError}")
+    except FlightStopRequested:
+        flightOutcome["outcome"] = "STOPPED BY PILOT"
+        flightOutcome["stopReason"] = "Stop pressed. The copter was told to land."
+        writeFlightLine(flightOutcome, "Stop pressed. Landing now.")
+        if vehicle is not None and getattr(vehicle, "armed", False) and not landingWasStarted:
+            landingWasStarted = True
+            try:
+                from dronekit import VehicleMode
+                landUntilPropellersStop(vehicle, flightOutcome, VehicleMode)
+            except Exception as landError:
+                writeFlightLine(flightOutcome, f"Landing after stop did not finish: {landError}")
     except Exception as error:
         writeFlightLine(flightOutcome, f"Flight stopped: {error}")
         flightOutcome["outcome"] = "FAILED"
@@ -336,10 +426,263 @@ def runFly10FeetEastWestNorthSouthLand():
 
 def writeFlightLine(flightOutcome, text):
     print(text)
-    flightOutcome["lines"].append(text)
+    with flightProgressLock:
+        lines = flightOutcome.setdefault("lines", [])
+        if lines and lines[-1] == text:
+            flightOutcome["repeatCount"] = int(flightOutcome.get("repeatCount") or 1) + 1
+        else:
+            lines.append(text)
+            flightOutcome["repeatCount"] = 1
+        publishFlightSnapshot(flightOutcome, running=True)
 
 
-def listenForPreflightMessages(vehicle, prearmHealthBit):
+def raiseIfFlightStopped():
+    if flightClearRequested:
+        raise FlightClearRequested()
+    if flightReturnHomeRequested:
+        raise FlightReturnHomeRequested()
+    if flightStopRequested:
+        raise FlightStopRequested()
+
+
+def connectUntilCleared(connect, flightOutcome):
+    """Connect in short attempts so Clear flights can end a request before takeoff."""
+    deadline = time.monotonic() + CONNECTION_TIMEOUT_SECONDS
+    lastError = None
+    while time.monotonic() < deadline:
+        raiseIfFlightStopped()
+        attemptSeconds = min(3.0, max(0.5, deadline - time.monotonic()))
+        try:
+            return connect(
+                PIXHAWK_PORT,
+                baud=PIXHAWK_BAUD,
+                wait_ready=True,
+                timeout=attemptSeconds,
+                source_system=GROUND_STATION_SYSTEM_ID,
+            )
+        except (FlightStopRequested, FlightReturnHomeRequested, FlightClearRequested):
+            raise
+        except Exception as error:
+            lastError = error
+            time.sleep(0.2)
+    raise RuntimeError(f"Could not connect to the Pixhawk. {lastError}")
+
+
+async def stopFly10FeetEWNSLand():
+    """Ask the running east-west-north-south flight to land immediately."""
+    global flightStopRequested, flightReturnHomeRequested, flightClearRequested
+    if not flightIsRunning:
+        return {
+            "stopped": False,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "NO EWNS FLIGHT IS RUNNING",
+            "message": "No east-west-north-south flight is running.",
+        }
+    flightReturnHomeRequested = False
+    flightClearRequested = False
+    flightStopRequested = True
+    vehicle = activeFlightVehicle
+    outcome = activeFlightOutcome
+    if outcome is not None:
+        writeFlightLine(outcome, "Stop pressed. Landing now.")
+    if vehicle is None or getattr(vehicle, "commandCableClosed", False):
+        return {
+            "stopped": True,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "STOP REQUESTED",
+            "message": "Stop pressed. The flight will end without taking off.",
+        }
+    try:
+        from dronekit import VehicleMode
+        vehicle.mode = VehicleMode("LAND")
+    except Exception as error:
+        return {
+            "stopped": True,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "STOP REQUESTED",
+            "message": f"Stop pressed. LAND was not confirmed: {error}",
+        }
+    return {
+        "stopped": True,
+        "scriptName": "fly10FeetEWNSLand",
+        "outcome": "LANDING",
+        "message": "Stop pressed. LAND sent. The copter is landing now.",
+    }
+
+
+async def clearFly10FeetEWNSLand():
+    """Drop an east-west-north-south request that has not taken off."""
+    global flightStopRequested, flightReturnHomeRequested, flightClearRequested
+    vehicle = activeFlightVehicle
+    armed = (
+        vehicle is not None
+        and getattr(vehicle, "armed", False)
+        and not getattr(vehicle, "commandCableClosed", False)
+    )
+    if armed:
+        return {
+            "cleared": False,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "AIRBORNE",
+            "message": "The copter is already in the air. Use Stop and land or Return to Home Location.",
+        }
+    wasRunning = bool(flightIsRunning)
+    if wasRunning:
+        flightStopRequested = False
+        flightReturnHomeRequested = False
+        flightClearRequested = True
+        if activeFlightOutcome is not None:
+            writeFlightLine(activeFlightOutcome, "Clear flights pressed. Ending the request before takeoff.")
+        deadline = time.monotonic() + 8.0
+        while flightIsRunning and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+    if flightIsRunning:
+        return {
+            "cleared": False,
+            "stillRunning": True,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "STILL CLOSING",
+            "message": "Clear was sent. The open request is still closing. Wait a moment, then press Fly.",
+        }
+    return {
+        "cleared": True,
+        "scriptName": "fly10FeetEWNSLand",
+        "outcome": "CLEARED",
+        "message": "Flight requests cleared. Press Fly when ready." if wasRunning else "No flight request was waiting. Press Fly when ready.",
+    }
+
+
+async def returnFly10FeetEWNSLandHome():
+    """Send the running east-west-north-south flight back to the takeoff spot, then land."""
+    global flightStopRequested, flightReturnHomeRequested, flightClearRequested
+    if not flightIsRunning:
+        return {
+            "returning": False,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "NO EWNS FLIGHT IS RUNNING",
+            "message": "No east-west-north-south flight is running.",
+        }
+    flightStopRequested = False
+    flightReturnHomeRequested = True
+    flightClearRequested = False
+    vehicle = activeFlightVehicle
+    outcome = activeFlightOutcome
+    if outcome is not None:
+        writeFlightLine(outcome, "Return to home pressed. Flying back to the takeoff spot, then landing.")
+    if vehicle is None or getattr(vehicle, "commandCableClosed", False) or not getattr(vehicle, "armed", False):
+        return {
+            "returning": True,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "RETURN REQUESTED",
+            "message": "Return to home pressed. The copter has not taken off, so the flight will end.",
+        }
+    try:
+        from dronekit import VehicleMode
+        vehicle.mode = VehicleMode("RTL")
+    except Exception as error:
+        return {
+            "returning": True,
+            "scriptName": "fly10FeetEWNSLand",
+            "outcome": "RETURN REQUESTED",
+            "message": f"Return to home pressed. RTL was not confirmed: {error}",
+        }
+    return {
+        "returning": True,
+        "scriptName": "fly10FeetEWNSLand",
+        "outcome": "RETURNING HOME",
+        "message": "Return to home sent. The copter is flying back to the takeoff spot, then landing.",
+    }
+
+
+def holdCurrentAltitudeForReturn(vehicle, flightOutcome):
+    """Keep the return at the current height. RTL_ALT is centimeters, and 0 means do not climb first."""
+    if getattr(vehicle, "savedReturnAltitudeCentimeters", None) is None:
+        currentValue = vehicle.parameters["RTL_ALT"]
+        vehicle.savedReturnAltitudeCentimeters = None if currentValue is None else float(currentValue)
+    confirmPixhawkParameter(vehicle, "RTL_ALT", 0)
+    if flightOutcome is not None:
+        writeFlightLine(flightOutcome, "Return altitude held at the current height.")
+
+
+def returnHomeUntilLanded(vehicle, flightOutcome, vehicleMode):
+    holdCurrentAltitudeForReturn(vehicle, flightOutcome)
+    writeFlightLine(flightOutcome, "Returning to the takeoff location, then landing.")
+    commandFlightMode(vehicle, "RTL", vehicleMode, flightOutcome)
+    landStartTime = time.monotonic()
+    while vehicle.armed:
+        if flightStopRequested:
+            flightOutcome["outcome"] = "STOPPED BY PILOT"
+            flightOutcome["stopReason"] = "Stop pressed during return home. Landing here."
+            writeFlightLine(flightOutcome, "Stop pressed during return home. Landing here.")
+            landUntilPropellersStop(vehicle, flightOutcome, vehicleMode)
+            return
+        if not pixhawkHeartbeatIsFresh(vehicle):
+            writeFlightLine(flightOutcome, "Heartbeat lost during return home. Closing the cable so the onboard failsafe finishes the landing.")
+            vehicle.commandCableClosed = True
+            vehicle.close()
+            flightOutcome["steps"]["land"] = "ONBOARD FAILSAFE"
+            return
+        if time.monotonic() - landStartTime > LAND_TIMEOUT_SECONDS:
+            raise RuntimeError("Return home did not finish. The motors are still armed.")
+        location = vehicle.location.global_relative_frame
+        heightText = "waiting" if location is None or location.alt is None else f"{float(location.alt) * FEET_PER_METER:.2f} ft"
+        writeFlightLine(flightOutcome, f"Returning home. {heightText}")
+        time.sleep(PRINT_INTERVAL_SECONDS)
+    writeFlightLine(flightOutcome, "Back at the takeoff spot. Motors disarmed and propellers stopped.")
+
+
+def beginFlightProgress(scriptName):
+    publishFlightSnapshot(
+        {
+            "scriptName": scriptName,
+            "startedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "lines": ["YES received. Opening the Pixhawk."],
+            "repeatCount": 1,
+            "outcome": None,
+            "stopReason": None,
+        },
+        running=True,
+    )
+
+
+def rememberFlightProgressLoop(loop):
+    global flightProgressLoop
+    flightProgressLoop = loop
+
+
+def readFlightProgress():
+    return dict(latestFlightProgress)
+
+
+def publishFlightSnapshot(flightOutcome, running):
+    global latestFlightProgress
+    lines = list(flightOutcome.get("lines") or [])
+    latestFlightProgress = {
+        "running": bool(running),
+        "scriptName": flightOutcome.get("scriptName"),
+        "outcome": None if running else flightOutcome.get("outcome"),
+        "latestLine": lines[-1] if lines else None,
+        "repeatCount": int(flightOutcome.get("repeatCount") or (1 if lines else 0)),
+        "lines": lines[-80:],
+        "stopReason": None if running else flightOutcome.get("stopReason"),
+        "startedAt": flightOutcome.get("startedAt"),
+    }
+    sendFlightProgress(latestFlightProgress)
+
+
+def sendFlightProgress(snapshot):
+    if flightProgressLoop is None:
+        return
+    outgoing = dict(snapshot)
+    outgoing["lines"] = list(snapshot.get("lines") or [])
+    for progressQueue in list(flightProgressQueues):
+        try:
+            flightProgressLoop.call_soon_threadsafe(progressQueue.put_nowait, outgoing)
+        except Exception as error:
+            print(f"Flight progress was not sent: {error}")
+
+
+def listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome):
     latestTelemetry = {
         "compassVariance": None,
         "prearmHealthy": None,
@@ -368,7 +711,9 @@ def listenForPreflightMessages(vehicle, prearmHealthBit):
         if text:
             if "prearm" in text.lower():
                 latestTelemetry["lastPrearmReason"] = text
-            print(f"  Pixhawk: {text}")
+            if FALSE_BATTERY_WARNING in text.lower():
+                latestTelemetry["sawFalseBatteryWarning"] = True
+            writeFlightLine(flightOutcome, f"Pixhawk: {text}")
 
     return latestTelemetry
 
@@ -394,7 +739,10 @@ def requestFlightStreams(vehicle, middleMan):
 
 def waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome):
     startedAt = time.monotonic()
+    writeFlightLine(flightOutcome, pixhawkBatteryVoltageText(vehicle))
     while True:
+        raiseIfFlightStopped()
+        releaseFalseBatteryFailsafe(vehicle, latestTelemetry, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
         if time.monotonic() - startedAt > PREFLIGHT_WAIT_TIMEOUT_SECONDS:
             raise RuntimeError("Preflight did not pass in time. The copter was not armed.")
         blocker = preflightBlocker(vehicle, latestTelemetry, runPrearmCommandId)
@@ -517,6 +865,7 @@ def armAndWait(vehicle, flightOutcome):
     vehicle.armed = True
     armStartTime = time.monotonic()
     while not vehicle.armed:
+        raiseIfFlightStopped()
         if time.monotonic() - armStartTime > ARM_TIMEOUT_SECONDS:
             raise RuntimeError("Arming timed out.")
         if not pixhawkHeartbeatIsFresh(vehicle):
@@ -532,7 +881,9 @@ def climbToFiveFeet(vehicle, flightOutcome):
     takeoffStartTime = time.monotonic()
     lastPrintTime = 0.0
     while True:
+        raiseIfFlightStopped()
         if vehicle.mode.name != "GUIDED":
+            raiseIfFlightStopped()
             raise RuntimeError("GUIDED mode lost during takeoff.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
         nowTime = time.monotonic()
@@ -552,7 +903,9 @@ def settleAtFiveFeet(vehicle, flightOutcome):
     writeFlightLine(flightOutcome, f"Settling for {TAKEOFF_SETTLE_SECONDS:.0f} seconds before the hover.")
     settleStart = time.monotonic()
     while time.monotonic() - settleStart < TAKEOFF_SETTLE_SECONDS:
+        raiseIfFlightStopped()
         if vehicle.mode.name != "GUIDED":
+            raiseIfFlightStopped()
             raise RuntimeError("GUIDED mode lost during the takeoff settle.")
         checkFlightHealthAndCeiling(vehicle, flightOutcome)
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
@@ -567,10 +920,12 @@ def holdHoverAtFiveFeet(vehicle, flightOutcome, hoverName, durationSeconds=None)
     lastPrintTime = 0.0
     largestDriftFeet = 0.0
     while True:
+        raiseIfFlightStopped()
         elapsedSeconds = time.monotonic() - hoverStartTime
         if elapsedSeconds >= durationSeconds:
             break
         if vehicle.mode.name != "LOITER":
+            raiseIfFlightStopped()
             raise RuntimeError(f"LOITER mode lost during the {hoverName} hover.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
         northMeters, eastMeters = northAndEastFromStart(vehicle, startLatitude, startLongitude)
@@ -589,7 +944,8 @@ def holdHoverAtFiveFeet(vehicle, flightOutcome, hoverName, durationSeconds=None)
     writeFlightLine(flightOutcome, f"Hover {hoverName} completed.")
 
 
-def faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome):
+def faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome, altitudeFeet=HOVER_ALTITUDE_FEET):
+    targetAltitudeMeters = altitudeFeet / FEET_PER_METER
     currentHeadingDegrees = math.degrees(float(vehicle.attitude.yaw or 0.0))
     headingErrorDegrees = angleFromNorthDegrees(currentHeadingDegrees)
     if abs(headingErrorDegrees) <= NORTH_HEADING_TOLERANCE_DEGREES:
@@ -600,10 +956,12 @@ def faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome):
     yawStartTime = time.monotonic()
     lastPrintTime = 0.0
     while True:
+        raiseIfFlightStopped()
         if vehicle.mode.name != "GUIDED":
+            raiseIfFlightStopped()
             raise RuntimeError("GUIDED mode lost while turning north.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
-        sendLocalVelocity(vehicle, 0.0, 0.0, downSpeedToHoldFiveFeet(altitudeMeters), velocityTypeMask)
+        sendLocalVelocity(vehicle, 0.0, 0.0, downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters), velocityTypeMask)
         commandFaceGeographicNorth(vehicle, middleMan)
         currentHeadingDegrees = math.degrees(float(vehicle.attitude.yaw or 0.0))
         headingErrorDegrees = angleFromNorthDegrees(currentHeadingDegrees)
@@ -621,6 +979,7 @@ def faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome):
 
     settleStart = time.monotonic()
     while time.monotonic() - settleStart < YAW_SETTLE_SECONDS:
+        raiseIfFlightStopped()
         checkFlightHealthAndCeiling(vehicle, flightOutcome)
         sendLocalVelocity(vehicle, 0.0, 0.0, 0.0, velocityTypeMask)
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
@@ -640,7 +999,9 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
     lastPrintTime = 0.0
     try:
         while True:
+            raiseIfFlightStopped()
             if vehicle.mode.name != "GUIDED":
+                raiseIfFlightStopped()
                 raise RuntimeError(f"GUIDED mode lost during the {directionName} leg.")
             altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
             northMeters, eastMeters = northAndEastFromStart(vehicle, startLatitude, startLongitude)
@@ -669,7 +1030,9 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
 
         brakeStartTime = time.monotonic()
         while time.monotonic() - brakeStartTime < SETTLE_AFTER_MOVE_SECONDS:
+            raiseIfFlightStopped()
             if vehicle.mode.name != "GUIDED":
+                raiseIfFlightStopped()
                 raise RuntimeError(f"GUIDED mode lost while stopping the {directionName} leg.")
             altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
             sendLocalVelocity(vehicle, 0.0, 0.0, downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters), velocityTypeMask)
@@ -677,7 +1040,7 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
         flightOutcome["steps"][f"fly {directionName}"] = "SUCCESS"
         writeFlightLine(flightOutcome, f"{directionName} leg stopped.")
     finally:
-        if pixhawkHeartbeatIsFresh(vehicle) and not getattr(vehicle, "commandCableClosed", False):
+        if pixhawkHeartbeatIsFresh(vehicle) and not getattr(vehicle, "commandCableClosed", False) and not flightStopRequested and not flightReturnHomeRequested and not flightClearRequested:
             try:
                 sendLocalVelocity(vehicle, 0.0, 0.0, 0.0, velocityTypeMask)
             except Exception as stopError:
@@ -707,6 +1070,8 @@ def landUntilPropellersStop(vehicle, flightOutcome, vehicleMode):
 def finishFlightConnection(vehicle, droneKitTools, flightOutcome, copterWasArmed, landingWasStarted, savedFailsafe, originalTakeoffSlewSeconds):
     try:
         if vehicle is not None and not getattr(vehicle, "commandCableClosed", False):
+            if flightClearRequested and not getattr(vehicle, "armed", False):
+                copterWasArmed = False
             if (copterWasArmed or vehicle.armed) and not landingWasStarted:
                 writeFlightLine(flightOutcome, "Requesting LAND.")
                 vehicleMode = droneKitTools[0] if droneKitTools is not None else None
@@ -739,6 +1104,10 @@ def finishFlightConnection(vehicle, droneKitTools, flightOutcome, copterWasArmed
                 if originalTakeoffSlewSeconds is not None:
                     confirmPixhawkParameter(vehicle, TAKEOFF_SLEW_PARAMETER_NAME, originalTakeoffSlewSeconds)
                     writeFlightLine(flightOutcome, f"{TAKEOFF_SLEW_PARAMETER_NAME} restored.")
+                savedReturnAltitude = getattr(vehicle, "savedReturnAltitudeCentimeters", None)
+                if savedReturnAltitude is not None:
+                    confirmPixhawkParameter(vehicle, "RTL_ALT", savedReturnAltitude)
+                    writeFlightLine(flightOutcome, "Return altitude restored.")
     except Exception as closeError:
         writeFlightLine(flightOutcome, f"Could not close the flight cleanly: {closeError}")
     try:
@@ -748,8 +1117,11 @@ def finishFlightConnection(vehicle, droneKitTools, flightOutcome, copterWasArmed
             writeFlightLine(flightOutcome, "Command cable closed.")
     except Exception as closeError:
         writeFlightLine(flightOutcome, f"Could not close the command cable: {closeError}")
+    global activeFlightVehicle, activeFlightOutcome
     flightOutcome["finishedAt"] = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     writeFlightLine(flightOutcome, f"Outcome: {flightOutcome['outcome']}")
+    activeFlightVehicle = None
+    activeFlightOutcome = None
 
 
 def pixhawkHeartbeatIsFresh(vehicle):
@@ -760,10 +1132,22 @@ def pixhawkHeartbeatIsFresh(vehicle):
 
 
 def commandFlightMode(vehicle, flightModeName, vehicleMode, flightOutcome):
+    if flightClearRequested:
+        raise FlightClearRequested()
+    if flightReturnHomeRequested and flightModeName != "RTL":
+        raise FlightReturnHomeRequested()
+    if flightStopRequested and flightModeName != "LAND":
+        raise FlightStopRequested()
     writeFlightLine(flightOutcome, f"Requesting {flightModeName}.")
     vehicle.mode = vehicleMode(flightModeName)
     startTime = time.monotonic()
     while time.monotonic() - startTime < MODE_CHANGE_TIMEOUT_SECONDS:
+        if flightClearRequested:
+            raise FlightClearRequested()
+        if flightReturnHomeRequested and flightModeName != "RTL":
+            raise FlightReturnHomeRequested()
+        if flightStopRequested and flightModeName != "LAND":
+            raise FlightStopRequested()
         if vehicle.mode.name == flightModeName:
             return
         if not pixhawkHeartbeatIsFresh(vehicle):
@@ -784,6 +1168,85 @@ def confirmPixhawkParameter(vehicle, parameterName, wantedValue):
         or abs(float(confirmedValue) - float(wantedValue)) >= PARAMETER_TOLERANCE
     ):
         raise RuntimeError(f"{parameterName} did not stay at {float(wantedValue):.1f}.")
+
+
+def pixhawkBatteryVoltageText(vehicle):
+    battery = getattr(vehicle, "battery", None)
+    voltage = getattr(battery, "voltage", None) if battery is not None else None
+    if voltage is None or not math.isfinite(float(voltage)) or float(voltage) < 0:
+        return "Pixhawk battery voltage was not reported."
+    return f"Pixhawk battery voltage reads {float(voltage):.2f} volts."
+
+
+def releaseFalseBatteryFailsafe(vehicle, latestTelemetry, writeLine, confirmParameter):
+    """A full pack can still be reported low. That one failsafe must not refuse arm."""
+    if latestTelemetry.get("falseBatteryFailsafeIgnored"):
+        return
+    reasonText = (latestTelemetry.get("lastPrearmReason") or "").lower()
+    if FALSE_BATTERY_WARNING not in reasonText and not latestTelemetry.get("sawFalseBatteryWarning"):
+        return
+    writeLine(pixhawkBatteryVoltageText(vehicle))
+    writeLine("Battery 1 low voltage failsafe is a false reading. Disabling that failsafe for this flight.")
+    confirmParameter(vehicle, BATTERY_LOW_FAILSAFE_ACTION_PARAMETER, BATTERY_FAILSAFE_ACTION_NONE)
+    confirmParameter(vehicle, BATTERY_CRITICAL_FAILSAFE_ACTION_PARAMETER, BATTERY_FAILSAFE_ACTION_NONE)
+    latestTelemetry["falseBatteryFailsafeIgnored"] = True
+    latestTelemetry["lastPrearmReason"] = None
+    latestTelemetry["sawFalseBatteryWarning"] = False
+
+
+def boardAndGpsPuckCompassIds(vehicle):
+    internalCompassId = None
+    gpsPuckCompassId = None
+    for deviceIdParameter, externalParameter in COMPASS_SLOT_PARAMETERS:
+        deviceId = int(round(float(vehicle.parameters[deviceIdParameter] or 0)))
+        externalFlag = int(round(float(vehicle.parameters[externalParameter] or 0)))
+        if deviceId == 0:
+            continue
+        if externalFlag in (1, 2):
+            gpsPuckCompassId = deviceId
+        else:
+            internalCompassId = deviceId
+    if internalCompassId is None or gpsPuckCompassId is None:
+        raise RuntimeError("Could not detect both the board compass and the GPS puck compass.")
+    return internalCompassId, gpsPuckCompassId
+
+
+def ensureBoardCompassIsPrimary(vehicle, rebootAndReconnect, writeLine, confirmParameter):
+    """Board compass is priority 1. The GPS puck is priority 2. Reboot only when that order changes."""
+    internalCompassId, gpsPuckCompassId = boardAndGpsPuckCompassIds(vehicle)
+    writeLine(f"Board compass id {internalCompassId}. GPS puck compass id {gpsPuckCompassId}.")
+    priority1 = int(round(float(vehicle.parameters["COMPASS_PRIO1_ID"] or 0)))
+    priority2 = int(round(float(vehicle.parameters["COMPASS_PRIO2_ID"] or 0)))
+    if priority1 == internalCompassId and priority2 == gpsPuckCompassId:
+        writeLine("Compass order is already the board compass first and the GPS puck second.")
+        return vehicle
+    confirmParameter(vehicle, "COMPASS_PRIO1_ID", internalCompassId)
+    confirmParameter(vehicle, "COMPASS_PRIO2_ID", gpsPuckCompassId)
+    confirmParameter(vehicle, "COMPASS_USE", 1)
+    confirmParameter(vehicle, "COMPASS_USE2", 1)
+    writeLine("Compass priority changed. Rebooting so the board compass is primary and the GPS puck is secondary.")
+    return rebootAndReconnect(vehicle)
+
+
+def rebootFlightVehicle(vehicle, connect, flightOutcome):
+    from pymavlink import mavutil as middleMan
+    vehicle._master.mav.command_long_send(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        middleMan.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+        0,
+        1, 0, 0, 0, 0, 0, 0,
+    )
+    try:
+        vehicle.close()
+    except Exception:
+        pass
+    time.sleep(COMPASS_PRIORITY_REBOOT_WAIT_SECONDS)
+    reconnected = connectUntilCleared(connect, flightOutcome)
+    if reconnected._master.target_component == 0:
+        reconnected._master.target_component = 1
+    writeFlightLine(flightOutcome, "Pixhawk rebooted with the board compass as primary.")
+    return reconnected
 
 
 def checkFlightHealthAndCeiling(vehicle, flightOutcome):
@@ -884,6 +1347,7 @@ def commandFaceGeographicNorth(vehicle, middleMan):
 
 
 def sendLocalVelocity(vehicle, northMetersPerSecond, eastMetersPerSecond, downMetersPerSecond, velocityTypeMask):
+    raiseIfFlightStopped()
     message = vehicle.message_factory.set_position_target_local_ned_encode(
         0,
         vehicle._master.target_system,
@@ -938,13 +1402,16 @@ async def fly10FeetE360W360N360S360Land(request):
                     "started": False,
                     "outcome": "THE COMMAND CABLE IS ALREADY IN USE",
                 }
+            resetFlightControlFlags()
             flightIsRunning = True
+        beginFlightProgress("fly10FeetE360W360N360S360Land")
         try:
             flightOutcome = await asyncio.to_thread(runTurnMission)
         finally:
             async with flightGuard:
                 flightIsRunning = False
         flightOutcome["id"] = saveFlightLog(flightOutcome)
+        publishFlightSnapshot(flightOutcome, running=False)
         return flightOutcome
     except Exception as error:
         print(f"fly10FeetE360W360N360S360Land did not finish: {error}")
@@ -959,6 +1426,7 @@ async def fly10FeetE360W360N360S360Land(request):
 
 
 def runTurnMission():
+    global activeFlightVehicle, activeFlightOutcome
     flightOutcome = {
         "scriptName": "fly10FeetE360W360N360S360Land",
         "started": True,
@@ -970,6 +1438,7 @@ def runTurnMission():
         "lines": [],
         "steps": {},
     }
+    activeFlightOutcome = flightOutcome
     vehicle = None
     originalTakeoffSlewSeconds = None
     savedFailsafe = None
@@ -1001,18 +1470,22 @@ def runTurnMission():
         prearmHealthBit = getattr(middleMan.mavlink, "MAV_SYS_STATUS_PREARM_CHECK", 268435456)
         runPrearmCommandId = getattr(middleMan.mavlink, "MAV_CMD_RUN_PREARM_CHECKS", 401)
         writeFlightLine(flightOutcome, f"Connecting to Pixhawk on {PIXHAWK_PORT} at {PIXHAWK_BAUD} baud.")
-        vehicle = connect(
-            PIXHAWK_PORT,
-            baud=PIXHAWK_BAUD,
-            wait_ready=True,
-            timeout=CONNECTION_TIMEOUT_SECONDS,
-            source_system=GROUND_STATION_SYSTEM_ID,
-        )
+        vehicle = connectUntilCleared(connect, flightOutcome)
         if vehicle._master.target_component == 0:
             vehicle._master.target_component = 1
-        vehicle.altitudeCeilingMeters = TURN_MISSION_CEILING_FEET / FEET_PER_METER
         writeFlightLine(flightOutcome, "Pixhawk connected.")
-        latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit)
+        activeFlightVehicle = vehicle
+        activeFlightOutcome = flightOutcome
+        raiseIfFlightStopped()
+        vehicle = ensureBoardCompassIsPrimary(
+            vehicle,
+            lambda currentVehicle: rebootFlightVehicle(currentVehicle, connect, flightOutcome),
+            lambda text: writeFlightLine(flightOutcome, text),
+            confirmPixhawkParameter,
+        )
+        vehicle.altitudeCeilingMeters = TURN_MISSION_CEILING_FEET / FEET_PER_METER
+        activeFlightVehicle = vehicle
+        latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
         waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]
@@ -1033,6 +1506,7 @@ def runTurnMission():
         holdHoverAtFiveFeet(vehicle, flightOutcome, "at 7 feet", TURN_MISSION_FIRST_HOVER_SECONDS)
 
         commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
+        faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome, altitudeFeet=TURN_MISSION_HOVER_FEET)
         turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after the first hover")
         commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
         holdHoverAtFiveFeet(vehicle, flightOutcome, "after the first turn", TURN_MISSION_SHORT_HOVER_SECONDS)
@@ -1065,6 +1539,41 @@ def runTurnMission():
             flightOutcome["outcome"] = "SUCCESS"
             flightOutcome["steps"]["land"] = "SUCCESS"
             writeFlightLine(flightOutcome, "Flight complete.")
+    except KeyboardInterrupt:
+        writeFlightLine(flightOutcome, "Flight interrupted.")
+        flightOutcome["outcome"] = "EXITED MID-WAY"
+        flightOutcome["stopReason"] = "Interrupted."
+    except FlightClearRequested:
+        flightOutcome["outcome"] = "CLEARED BEFORE FLYING"
+        flightOutcome["stopReason"] = "Clear flights pressed. The request ended before takeoff."
+        writeFlightLine(flightOutcome, "Flight request cleared before takeoff.")
+    except FlightReturnHomeRequested:
+        flightOutcome["outcome"] = "RETURNED HOME"
+        flightOutcome["stopReason"] = "Return to home pressed. The copter was sent back to the takeoff spot to land."
+        writeFlightLine(flightOutcome, "Return to home pressed. Flying back to the takeoff spot, then landing.")
+        if vehicle is not None and getattr(vehicle, "armed", False) and not landingWasStarted:
+            landingWasStarted = True
+            try:
+                from dronekit import VehicleMode
+                returnHomeUntilLanded(vehicle, flightOutcome, VehicleMode)
+            except Exception as landError:
+                writeFlightLine(flightOutcome, f"Return home did not finish: {landError}. Landing here.")
+                try:
+                    from dronekit import VehicleMode
+                    landUntilPropellersStop(vehicle, flightOutcome, VehicleMode)
+                except Exception as secondError:
+                    writeFlightLine(flightOutcome, f"Landing after return home did not finish: {secondError}")
+    except FlightStopRequested:
+        flightOutcome["outcome"] = "STOPPED BY PILOT"
+        flightOutcome["stopReason"] = "Stop pressed. The copter was told to land."
+        writeFlightLine(flightOutcome, "Stop pressed. Landing now.")
+        if vehicle is not None and getattr(vehicle, "armed", False) and not landingWasStarted:
+            landingWasStarted = True
+            try:
+                from dronekit import VehicleMode
+                landUntilPropellersStop(vehicle, flightOutcome, VehicleMode)
+            except Exception as landError:
+                writeFlightLine(flightOutcome, f"Landing after stop did not finish: {landError}")
     except Exception as error:
         writeFlightLine(flightOutcome, f"Flight stopped: {error}")
         flightOutcome["outcome"] = "FAILED"
@@ -1091,7 +1600,9 @@ def climbFromTakeoffToHover(vehicle, flightOutcome, takeoffFeet, hoverFeet):
     started = time.monotonic()
     lastPrint = 0.0
     while True:
+        raiseIfFlightStopped()
         if vehicle.mode.name != "GUIDED":
+            raiseIfFlightStopped()
             raise RuntimeError("GUIDED mode lost during takeoff.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
         nowTime = time.monotonic()
@@ -1137,6 +1648,7 @@ def flyCardinalLeg(vehicle, flightOutcome, directionName, distanceFeet, velocity
 
 
 def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, turnName):
+    raiseIfFlightStopped()
     if vehicle.mode.name != "GUIDED":
         raise RuntimeError("GUIDED mode was lost before the clockwise turn.")
     writeFlightLine(flightOutcome, f"Turning clockwise 360 degrees, {turnName}. Keep this pose. Do not flip the drone.")
@@ -1145,17 +1657,23 @@ def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutco
     turnedDegrees = 0.0
     started = time.monotonic()
     lastPrint = 0.0
+    altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
+    sendLocalVelocity(vehicle, 0.0, 0.0, downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters), velocityTypeMask)
+    commandClockwiseRelativeTurn(vehicle, middleMan)
     while turnedDegrees < FULL_TURN_DONE_DEGREES:
+        raiseIfFlightStopped()
         if vehicle.mode.name != "GUIDED":
+            raiseIfFlightStopped()
             raise RuntimeError("GUIDED mode lost during the clockwise turn.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
-        sendLocalVelocity(vehicle, 0.0, 0.0, downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters), velocityTypeMask)
-        commandClockwiseRelativeTurn(vehicle, middleMan)
         heading = math.degrees(float(vehicle.attitude.yaw or 0.0))
         change = (heading - lastHeading + 540.0) % 360.0 - 180.0
         if change > 0:
             turnedDegrees += change
         lastHeading = heading
+        remainingDegrees = max(30.0, FULL_TURN_DEGREES - turnedDegrees)
+        sendLocalVelocity(vehicle, 0.0, 0.0, downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters), velocityTypeMask)
+        commandClockwiseRelativeTurn(vehicle, middleMan, remainingDegrees)
         nowTime = time.monotonic()
         if nowTime - lastPrint >= PRINT_INTERVAL_SECONDS:
             writeFlightLine(flightOutcome, f"Clockwise turn | {turnedDegrees:.0f} of 360 degrees")
@@ -1166,13 +1684,13 @@ def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutco
     writeFlightLine(flightOutcome, f"Clockwise 360 complete ({turnedDegrees:.0f} degrees).")
 
 
-def commandClockwiseRelativeTurn(vehicle, middleMan):
+def commandClockwiseRelativeTurn(vehicle, middleMan, turnDegrees=FULL_TURN_DEGREES):
     yawMessage = vehicle.message_factory.command_long_encode(
         vehicle._master.target_system,
         vehicle._master.target_component,
         middleMan.mavlink.MAV_CMD_CONDITION_YAW,
         0,
-        FULL_TURN_DEGREES,
+        float(turnDegrees),
         YAW_TURN_RATE_DEGREES_PER_SECOND,
         YAW_CLOCKWISE,
         YAW_RELATIVE,

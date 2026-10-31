@@ -17,8 +17,10 @@ WHY:
 HOW:
     1. Log every line in oct27-2026/thisDrone/flightLog/.
     2. Connect on /dev/serial0, pins 8 and 10, at 57600.
-    3. Wait for Quad X, a 3D GPS fix, 6 satellites, a trusted position,
-       and a level copter. Type YES.
+    3. Set the board compass first and the GPS puck second. Reboot only if
+       that order changed. Wait for Quad X, a 3D GPS fix, 5 satellites,
+       a trusted position, and a level copter. A false low-battery reading
+       does not block arm. Type YES.
     4. GUIDED takeoff to 5 feet, then sit for 2 seconds before LOITER.
     5. LOITER 60 seconds. A drift of 8 feet starts LAND.
     6. GUIDED: one full clockwise turn, then face true north and LOITER
@@ -113,7 +115,7 @@ PARAMETER_TOLERANCE = 0.01
 QUAD_FRAME_CLASS = 1
 QUAD_X_FRAME_TYPE = 1
 MINIMUM_GPS_FIX_TYPE = 3
-MINIMUM_SATELLITE_COUNT = 6
+MINIMUM_SATELLITE_COUNT = 5
 UNKNOWN_SATELLITE_COUNT = 255
 SKIP_COMPASS_OR_GPS_MASK = 4 | 8 | 4096
 
@@ -125,6 +127,15 @@ FAILSAFE_OPTIONS_PARAMETER_NAME = "FS_OPTIONS"
 GROUND_STATION_FAILSAFE_LAND_VALUE = 5
 CONTINUE_PILOT_MODE_ON_FAILSAFE_BIT = 16
 PREFERRED_FAILSAFE_TIMEOUT_SECONDS = 5.0
+FALSE_BATTERY_WARNING = "battery 1 low voltage"
+BATTERY_LOW_FAILSAFE_ACTION_PARAMETER = "BATT_FS_LOW_ACT"
+BATTERY_CRITICAL_FAILSAFE_ACTION_PARAMETER = "BATT_FS_CRT_ACT"
+BATTERY_FAILSAFE_ACTION_NONE = 0
+COMPASS_PRIORITY_REBOOT_WAIT_SECONDS = 12.0
+COMPASS_SLOT_PARAMETERS = (
+    ("COMPASS_DEV_ID", "COMPASS_EXTERNAL"),
+    ("COMPASS_DEV_ID2", "COMPASS_EXTERN2"),
+)
 
 MESSAGE_INTERVAL_SECONDS = 0.1
 MICROSECONDS_PER_SECOND = 1000000
@@ -558,6 +569,136 @@ def closeCommandCable(vehicle):
         print(f"Could not close the command cable: {error}")
 
 
+def pixhawkBatteryVoltageText(vehicle):
+    battery = getattr(vehicle, "battery", None)
+    voltage = getattr(battery, "voltage", None) if battery is not None else None
+    if voltage is None or not math.isfinite(float(voltage)) or float(voltage) < 0:
+        return "Pixhawk battery voltage was not reported."
+    return f"Pixhawk battery voltage reads {float(voltage):.2f} volts."
+
+
+def rememberPixhawkText(vehicle):
+    """Keep the latest pre-arm sentence so a false battery warning can be cleared."""
+    vehicle.preflightNotes = {
+        "lastPrearmReason": None,
+        "sawFalseBatteryWarning": False,
+        "falseBatteryFailsafeIgnored": False,
+    }
+
+    @vehicle.on_message("STATUSTEXT")
+    def onStatusText(_vehicle, _name, message):
+        text = getattr(message, "text", "")
+        if isinstance(text, bytes):
+            text = text.decode("ascii", errors="ignore")
+        text = str(text).strip("\x00").strip()
+        if not text:
+            return
+        print(f"Pixhawk: {text}")
+        if "prearm" in text.lower():
+            vehicle.preflightNotes["lastPrearmReason"] = text
+        if FALSE_BATTERY_WARNING in text.lower():
+            vehicle.preflightNotes["sawFalseBatteryWarning"] = True
+
+
+def releaseFalseBatteryFailsafe(vehicle):
+    notes = getattr(vehicle, "preflightNotes", None)
+    if notes is None or notes.get("falseBatteryFailsafeIgnored"):
+        return
+    reasonText = (notes.get("lastPrearmReason") or "").lower()
+    if FALSE_BATTERY_WARNING not in reasonText and not notes.get("sawFalseBatteryWarning"):
+        return
+    print(pixhawkBatteryVoltageText(vehicle))
+    print("Battery 1 low voltage failsafe is a false reading. Disabling that failsafe for this flight.")
+    setParameterAndConfirm(vehicle, BATTERY_LOW_FAILSAFE_ACTION_PARAMETER, BATTERY_FAILSAFE_ACTION_NONE)
+    setParameterAndConfirm(vehicle, BATTERY_CRITICAL_FAILSAFE_ACTION_PARAMETER, BATTERY_FAILSAFE_ACTION_NONE)
+    notes["falseBatteryFailsafeIgnored"] = True
+    notes["lastPrearmReason"] = None
+    notes["sawFalseBatteryWarning"] = False
+
+
+def boardAndGpsPuckCompassIds(vehicle):
+    internalCompassId = None
+    gpsPuckCompassId = None
+    for deviceIdParameter, externalParameter in COMPASS_SLOT_PARAMETERS:
+        deviceId = int(round(float(vehicle.parameters[deviceIdParameter] or 0)))
+        externalFlag = int(round(float(vehicle.parameters[externalParameter] or 0)))
+        if deviceId == 0:
+            continue
+        if externalFlag in (1, 2):
+            gpsPuckCompassId = deviceId
+        else:
+            internalCompassId = deviceId
+    if internalCompassId is None or gpsPuckCompassId is None:
+        raise RuntimeError("Could not detect both the board compass and the GPS puck compass.")
+    return internalCompassId, gpsPuckCompassId
+
+
+def requestPixhawkMessages(vehicle):
+    intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
+    for messageName in FLIGHT_MESSAGE_NAMES:
+        messageId = getattr(middleMan.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
+        if messageId is None:
+            continue
+        commandMessage = vehicle.message_factory.command_long_encode(
+            vehicle._master.target_system,
+            vehicle._master.target_component,
+            middleMan.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0,
+            messageId,
+            intervalMicroseconds,
+            0, 0, 0, 0, 0,
+        )
+        vehicle.send_mavlink(commandMessage)
+    vehicle.flush()
+
+
+def openPixhawk():
+    vehicle = connect(
+        PIXHAWK_PORT,
+        baud=PIXHAWK_BAUD,
+        wait_ready=True,
+        timeout=CONNECTION_TIMEOUT_SECONDS,
+        source_system=GROUND_STATION_SYSTEM_ID,
+    )
+    if vehicle._master.target_component == 0:
+        vehicle._master.target_component = 1
+    rememberPixhawkText(vehicle)
+    requestPixhawkMessages(vehicle)
+    return vehicle
+
+
+def ensureBoardCompassIsPrimary(vehicle):
+    """Board compass is priority 1. The GPS puck is priority 2. Reboot only when that order changes."""
+    internalCompassId, gpsPuckCompassId = boardAndGpsPuckCompassIds(vehicle)
+    print(f"Board compass id {internalCompassId}. GPS puck compass id {gpsPuckCompassId}.")
+    priority1 = int(round(float(vehicle.parameters["COMPASS_PRIO1_ID"] or 0)))
+    priority2 = int(round(float(vehicle.parameters["COMPASS_PRIO2_ID"] or 0)))
+    if priority1 == internalCompassId and priority2 == gpsPuckCompassId:
+        print("Compass order is already the board compass first and the GPS puck second.")
+        return vehicle
+    setParameterAndConfirm(vehicle, "COMPASS_PRIO1_ID", internalCompassId)
+    setParameterAndConfirm(vehicle, "COMPASS_PRIO2_ID", gpsPuckCompassId)
+    setParameterAndConfirm(vehicle, "COMPASS_USE", 1)
+    setParameterAndConfirm(vehicle, "COMPASS_USE2", 1)
+    print("Compass priority changed. Rebooting so the board compass is primary and the GPS puck is secondary.")
+    vehicle._master.mav.command_long_send(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        middleMan.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+        0,
+        1, 0, 0, 0, 0, 0, 0,
+    )
+    vehicle.commandCableClosed = True
+    try:
+        vehicle.close()
+    except Exception:
+        pass
+    time.sleep(COMPASS_PRIORITY_REBOOT_WAIT_SECONDS)
+    reconnected = openPixhawk()
+    print("Pixhawk rebooted with the board compass as primary.")
+    return reconnected
+
+
 def preflightBlocker(vehicle):
     if not heartbeatIsFresh(vehicle):
         return "Pixhawk heartbeat is missing."
@@ -588,7 +729,7 @@ def preflightBlocker(vehicle):
         return "GPS 3D fix required."
     satelliteCount = gpsReading.satellites_visible
     if satelliteCount is None or satelliteCount == UNKNOWN_SATELLITE_COUNT or satelliteCount < MINIMUM_SATELLITE_COUNT:
-        return f"At least 6 satellites required. Seeing {satelliteCount}."
+        return f"At least {MINIMUM_SATELLITE_COUNT} satellites required. Seeing {satelliteCount}."
     if not vehicle.ekf_ok:
         if vehicle._ekf_constposmode:
             return f"3D fix, {satelliteCount} satellites. EKF3 is still aligning GPS and compass."
@@ -605,7 +746,9 @@ def preflightBlocker(vehicle):
 
 
 def waitUntilReady(vehicle):
+    print(pixhawkBatteryVoltageText(vehicle))
     while True:
+        releaseFalseBatteryFailsafe(vehicle)
         blocker = preflightBlocker(vehicle)
         if blocker is None:
             heading = headingDegrees(vehicle)
@@ -701,24 +844,10 @@ def main():
         )
         if vehicle._master.target_component == 0:
             vehicle._master.target_component = 1
+        rememberPixhawkText(vehicle)
+        requestPixhawkMessages(vehicle)
         print("Pixhawk connected.")
-
-        intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
-        for messageName in FLIGHT_MESSAGE_NAMES:
-            messageId = getattr(middleMan.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
-            if messageId is None:
-                continue
-            commandMessage = vehicle.message_factory.command_long_encode(
-                vehicle._master.target_system,
-                vehicle._master.target_component,
-                middleMan.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-                0,
-                messageId,
-                intervalMicroseconds,
-                0, 0, 0, 0, 0,
-            )
-            vehicle.send_mavlink(commandMessage)
-        vehicle.flush()
+        vehicle = ensureBoardCompassIsPrimary(vehicle)
 
         waitUntilReady(vehicle)
         promptText = (

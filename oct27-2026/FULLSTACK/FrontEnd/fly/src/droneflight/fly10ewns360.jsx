@@ -1,6 +1,14 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { fly10FeetTurnMission, readFlightLogs } from "../backend-call/callBackend.js"
+import {
+  clearFly10FeetEastWestNorthSouthLand,
+  fly10FeetTurnMission,
+  readFlightLogs,
+  returnFly10FeetEastWestNorthSouthLandHome,
+  stopFly10FeetEastWestNorthSouthLand,
+  watchFlightProgress,
+} from "../backend-call/callBackend.js"
+import { LiveFlightSteps } from "./liveFlightSteps.jsx"
 
 const FLIGHT_STEPS = [
   "Take off to 6 feet, then come up to a hover at 7 feet.",
@@ -33,6 +41,9 @@ function Fly10EastWestNorthSouthTurns() {
   const [logStatus, setLogStatus] = useState("Loading flight logs...")
   const [flightReply, setFlightReply] = useState("")
   const [flightIsRunning, setFlightIsRunning] = useState(false)
+  const [liveProgress, setLiveProgress] = useState(null)
+  const [liveConnection, setLiveConnection] = useState("connecting")
+  const flyRequestRef = useRef(null)
 
   useEffect(() => {
     let pageIsOpen = true
@@ -51,11 +62,52 @@ function Fly10EastWestNorthSouthTurns() {
     }
   }, [])
 
+  useEffect(() => {
+    return watchFlightProgress(setLiveProgress, setLiveConnection)
+  }, [])
+
+  const turnMissionIsRunning =
+    flightIsRunning || (liveProgress?.running && liveProgress?.scriptName === "fly10FeetE360W360N360S360Land")
+
+  async function clearFlights() {
+    flyRequestRef.current?.abort()
+    setFlightReply("Clearing flight requests...")
+    try {
+      const reply = await clearFly10FeetEastWestNorthSouthLand()
+      setFlightReply(reply?.message || "Flight requests cleared.")
+      if (reply?.cleared) setFlightIsRunning(false)
+    } catch (error) {
+      setFlightReply(error?.response?.data?.detail || error?.message || "Clear did not reach the backend.")
+    }
+  }
+
+  async function returnHome() {
+    setFlightReply("Return to home pressed. Flying back to the takeoff spot, then landing.")
+    try {
+      const reply = await returnFly10FeetEastWestNorthSouthLandHome()
+      setFlightReply(reply?.message || reply?.outcome || "Return to home sent.")
+    } catch (error) {
+      setFlightReply(error?.response?.data?.detail || error?.message || "Return to home did not reach the backend.")
+    }
+  }
+
+  async function stopFlight() {
+    setFlightReply("Stop pressed. Landing now.")
+    try {
+      const reply = await stopFly10FeetEastWestNorthSouthLand()
+      setFlightReply(reply?.message || reply?.outcome || "Stop sent.")
+    } catch (error) {
+      setFlightReply(error?.response?.data?.detail || error?.message || "Stop did not reach the backend.")
+    }
+  }
+
   async function startFlight() {
+    const controller = new AbortController()
+    flyRequestRef.current = controller
     setFlightIsRunning(true)
     setFlightReply("Flight requested. Waiting for the copter to finish.")
     try {
-      const reply = await fly10FeetTurnMission()
+      const reply = await fly10FeetTurnMission(controller.signal)
       const outcome = reply?.outcome || "No outcome"
       const reason = reply?.stopReason ? ` — ${reply.stopReason}` : ""
       setFlightReply(`${outcome}${reason}`)
@@ -63,8 +115,10 @@ function Fly10EastWestNorthSouthTurns() {
       setFlightLogs(Array.isArray(body?.flightLogs) ? body.flightLogs : [])
       setLogStatus("")
     } catch (error) {
+      if (error?.code === "ERR_CANCELED" || error?.name === "CanceledError") return
       setFlightReply(error?.message || "The backend did not answer.")
     } finally {
+      if (flyRequestRef.current === controller) flyRequestRef.current = null
       setFlightIsRunning(false)
     }
   }
@@ -75,15 +129,37 @@ function Fly10EastWestNorthSouthTurns() {
       <p>
         The drone stays upright. A 360 is one clockwise turn in place. East, west, north, and south are straight moves at 7 feet.
       </p>
-      <button
-        className="brightButton flightButton"
-        type="button"
-        onClick={startFlight}
-        disabled={flightIsRunning}
-      >
-        {flightIsRunning ? "Flying..." : "Fly — sends YES"}
+      <button className="brightButton clearButton" type="button" onClick={clearFlights}>
+        Clear flights before flying
       </button>
+      <div className="buttonRow">
+        <button
+          className="brightButton flightButton"
+          type="button"
+          onClick={startFlight}
+          disabled={turnMissionIsRunning}
+        >
+          {turnMissionIsRunning ? "Flying..." : "Fly — sends YES"}
+        </button>
+        <button
+          className="brightButton homeButton"
+          type="button"
+          onClick={returnHome}
+          disabled={!turnMissionIsRunning}
+        >
+          Return to Home Location
+        </button>
+        <button
+          className="brightButton stopButton"
+          type="button"
+          onClick={stopFlight}
+          disabled={!turnMissionIsRunning}
+        >
+          Stop and land
+        </button>
+      </div>
       {flightReply ? <p>{flightReply}</p> : null}
+      <LiveFlightSteps progress={liveProgress} connection={liveConnection} />
       <ol className="positionList">
         {FLIGHT_STEPS.map((step) => (
           <li key={step}>{step}</li>
@@ -95,7 +171,7 @@ function Fly10EastWestNorthSouthTurns() {
         <ul>
           {flightLogs.map((flightLog) => (
             <li key={flightLog.id}>
-              {flightLog.savedAt || "unsaved time"} — {flightLog.details?.scriptName || "log"} — {flightLog.details?.outcome || flightLog.rawText || "saved"}
+              {flightLog.savedAt || "unsaved time"} — {flightLog.details?.scriptName || "log"} — {flightLog.details?.outcome || flightLog.rawText || "saved"}{flightLog.details?.stopReason ? ` — ${flightLog.details.stopReason}` : ""}
             </li>
           ))}
         </ul>

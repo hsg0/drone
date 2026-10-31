@@ -19,8 +19,8 @@ export async function getFromBackend(path) {
   return response.data
 }
 
-export async function postToBackend(path, body) {
-  const response = await backendClient.post(path, body)
+export async function postToBackend(path, body, signal) {
+  const response = await backendClient.post(path, body, { signal })
   return response.data
 }
 
@@ -40,12 +40,24 @@ export function saveFlightLog(body) {
   return postToBackend("/flights", body)
 }
 
-export function fly10FeetEastWestNorthSouthLand() {
-  return postToBackend("/flights/fly10FeetEWNSLand", { confirm: "YES" })
+export function fly10FeetEastWestNorthSouthLand(signal) {
+  return postToBackend("/flights/fly10FeetEWNSLand", { confirm: "YES" }, signal)
 }
 
-export function fly10FeetTurnMission() {
-  return postToBackend("/flights/fly10FeetE360W360N360S360Land", { confirm: "YES" })
+export function clearFly10FeetEastWestNorthSouthLand() {
+  return postToBackend("/flights/fly10FeetEWNSLand/clear", {})
+}
+
+export function stopFly10FeetEastWestNorthSouthLand() {
+  return postToBackend("/flights/fly10FeetEWNSLand/stop", {})
+}
+
+export function returnFly10FeetEastWestNorthSouthLandHome() {
+  return postToBackend("/flights/fly10FeetEWNSLand/return-home", {})
+}
+
+export function fly10FeetTurnMission(signal) {
+  return postToBackend("/flights/fly10FeetE360W360N360S360Land", { confirm: "YES" }, signal)
 }
 
 export function calibrateCompasses() {
@@ -102,6 +114,22 @@ export function offerCameraConnection(offer) {
 
 export function closeCameraConnection() {
   return postToBackend("/camera/webrtc/close", {})
+}
+
+export function watchFlightProgress(onProgress, onConnection) {
+  const liveUrl = backendBaseUrl.replace(/^http/, "ws") + "/flights/live"
+  const socket = new WebSocket(liveUrl)
+  socket.onopen = () => onConnection("open")
+  socket.onclose = () => onConnection("closed")
+  socket.onerror = () => onConnection("error")
+  socket.onmessage = (event) => {
+    try {
+      onProgress(JSON.parse(event.data))
+    } catch {
+      onConnection("error")
+    }
+  }
+  return () => socket.close()
 }
 
 export function watchCalibrationProgress(onProgress, onConnection) {

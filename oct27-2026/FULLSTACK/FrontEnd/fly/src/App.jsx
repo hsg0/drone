@@ -92,6 +92,15 @@ function App() {
           </Link>
         </div>
       </section>
+
+      <section className="buttonGroup">
+        <h2>Object detection autonomous</h2>
+        <div className="buttonRow">
+          <Link className="brightButton objectDetectionButton" to="/object-detection/autonomous">
+            Object detection autonomous
+          </Link>
+        </div>
+      </section>
     </main>
   )
 }
