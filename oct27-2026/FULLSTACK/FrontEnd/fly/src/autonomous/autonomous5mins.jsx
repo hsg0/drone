@@ -330,50 +330,25 @@ function AutonomousFiveMinutes() {
         <p>
           The corridor is the band around the flight line. The copter must stay inside this width. The red lines show the two edges of that band after you save.
         </p>
-        <h2>Fence corners</h2>
-        <ol className="positionList">
-          {corners.map((corner, index) => (
-            <li key={`${corner.lat}-${corner.lon}-${index}`}>
-              <strong>Corner {index + 1}</strong>
-              <span>Latitude {corner.lat.toFixed(6)}</span>
-              <span>Longitude {corner.lon.toFixed(6)}</span>
-            </li>
-          ))}
-        </ol>
-        {Array.isArray(savedPlan?.insetCorners) ? (
-          <>
-            <h2>Saved lock points</h2>
-            <p>The copter flies to these latitude and longitude points, {savedPlan.insetFeet || 6} feet inside the fence.</p>
-            <ol className="positionList">
-              {savedPlan.insetCorners.map((corner, index) => (
-                <li key={`lock-${corner.lat}-${corner.lon}-${index}`}>
-                  <strong>Lock point {index + 1}</strong>
-                  <span>Latitude {corner.lat.toFixed(6)}</span>
-                  <span>Longitude {corner.lon.toFixed(6)}</span>
-                </li>
-              ))}
-            </ol>
-          </>
-        ) : null}
       </section>
 
       <div className="buttonRow">
-        <button className="brightButton autonomousButton" type="button" onClick={closePerimeter} disabled={perimeterIsClosed || corners.length < 3 || flightIsRunning}>
+        <button className="brightButton closePerimeterButton" type="button" onClick={closePerimeter} disabled={perimeterIsClosed || corners.length < 3 || flightIsRunning}>
           Close perimeter
         </button>
-        <button className="brightButton autonomousButton" type="button" onClick={clearPerimeter} disabled={flightIsRunning}>
+        <button className="brightButton clearPerimeterButton" type="button" onClick={clearPerimeter} disabled={flightIsRunning}>
           Clear perimeter
         </button>
-        <button className="brightButton autonomousButton" type="button" onClick={savePlan} disabled={!canSave}>
+        <button className="brightButton savePerimeterButton" type="button" onClick={savePlan} disabled={!canSave}>
           Save perimeter
         </button>
-        <button className="brightButton autonomousButton" type="button" onClick={armCopter} disabled={!savedPlan || armed || flightIsRunning || armRequestIsRunning}>
+        <button className="brightButton armPerimeterButton" type="button" onClick={armCopter} disabled={!savedPlan || armed || flightIsRunning || armRequestIsRunning}>
           {armRequestIsRunning ? "Checking..." : "Arm"}
         </button>
-        <button className="brightButton autonomousButton" type="button" onClick={disarmCopter} disabled={!armed || flightIsRunning}>
+        <button className="brightButton disarmPerimeterButton" type="button" onClick={disarmCopter} disabled={!armed || flightIsRunning}>
           Disarm
         </button>
-        <button className="brightButton autonomousButton" type="button" onClick={takeOff} disabled={!savedPlan || !armed || flightIsRunning}>
+        <button className="brightButton flyPerimeterButton" type="button" onClick={takeOff} disabled={!savedPlan || !armed || flightIsRunning}>
           {flightIsRunning ? "Flying..." : "YES — fly 5 minutes"}
         </button>
       </div>
@@ -406,6 +381,34 @@ function AutonomousFiveMinutes() {
       <Link className="brightButton autonomousButton" to="/">
         Back to dashboard
       </Link>
+
+      <section className="planFacts">
+        <h2>Fence corners</h2>
+        <ol className="positionList">
+          {corners.map((corner, index) => (
+            <li key={`${corner.lat}-${corner.lon}-${index}`}>
+              <strong>Corner {index + 1}</strong>
+              <span>Latitude {corner.lat.toFixed(6)}</span>
+              <span>Longitude {corner.lon.toFixed(6)}</span>
+            </li>
+          ))}
+        </ol>
+        {Array.isArray(savedPlan?.insetCorners) ? (
+          <>
+            <h2>Saved lock points</h2>
+            <p>The copter flies to these latitude and longitude points, {savedPlan.insetFeet || 6} feet inside the fence.</p>
+            <ol className="positionList">
+              {savedPlan.insetCorners.map((corner, index) => (
+                <li key={`lock-${corner.lat}-${corner.lon}-${index}`}>
+                  <strong>Lock point {index + 1}</strong>
+                  <span>Latitude {corner.lat.toFixed(6)}</span>
+                  <span>Longitude {corner.lon.toFixed(6)}</span>
+                </li>
+              ))}
+            </ol>
+          </>
+        ) : null}
+      </section>
     </main>
   )
 }

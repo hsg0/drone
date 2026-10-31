@@ -755,13 +755,14 @@ def armCopter():
                 "outcome": "ALREADY ARMED",
                 "stopReason": "The copter is already armed. It was not taken off.",
             }
-        from controllers.flightController import ensureBoardCompassIsPrimary
+        from controllers.flightController import ensureBoardCompassIsPrimary, chooseCompassesForThisFlight
         vehicle = ensureBoardCompassIsPrimary(
             vehicle,
             rebootPlanVehicle,
             print,
             confirmPlanParameter,
         )
+        chooseCompassesForThisFlight(vehicle, print, confirmPlanParameter)
         waitUntilPlanPreflightPasses(vehicle)
         configurePlanFailsafeAndSlew(vehicle)
         blocker = preflightBlocker(vehicle)
@@ -1052,6 +1053,8 @@ def waitUntilPlanPreflightPasses(vehicle):
             print,
             confirmPlanParameter,
         )
+        from controllers.flightController import preferPrimaryCompassWhenTheyDisagree
+        preferPrimaryCompassWhenTheyDisagree(vehicle, vehicle.planTelemetry, print, confirmPlanParameter)
         blocker = preflightBlocker(vehicle)
         if blocker is None:
             return

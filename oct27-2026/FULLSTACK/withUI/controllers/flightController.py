@@ -111,9 +111,11 @@ BATTERY_LOW_FAILSAFE_ACTION_PARAMETER = "BATT_FS_LOW_ACT"
 BATTERY_CRITICAL_FAILSAFE_ACTION_PARAMETER = "BATT_FS_CRT_ACT"
 BATTERY_FAILSAFE_ACTION_NONE = 0
 COMPASS_PRIORITY_REBOOT_WAIT_SECONDS = 12.0
+COMPASS_AGREEMENT_LIMIT_DEGREES = 11.0
+COMPASS_FIELD_MINIMUM = 100.0
 COMPASS_SLOT_PARAMETERS = (
-    ("COMPASS_DEV_ID", "COMPASS_EXTERNAL"),
-    ("COMPASS_DEV_ID2", "COMPASS_EXTERN2"),
+    ("COMPASS_DEV_ID", "COMPASS_EXTERNAL", "COMPASS_USE", "SCALED_IMU"),
+    ("COMPASS_DEV_ID2", "COMPASS_EXTERN2", "COMPASS_USE2", "SCALED_IMU2"),
 )
 SKIP_COMPASS_OR_GPS_MASK = 4 | 8 | 4096
 MAXIMUM_COMPASS_VARIANCE = 0.50
@@ -332,6 +334,7 @@ def runFly10FeetEastWestNorthSouthLand():
         activeFlightVehicle = vehicle
         latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
+        chooseCompassesForThisFlight(vehicle, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
         waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
 
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]
@@ -743,6 +746,7 @@ def waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, fligh
     while True:
         raiseIfFlightStopped()
         releaseFalseBatteryFailsafe(vehicle, latestTelemetry, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
+        preferPrimaryCompassWhenTheyDisagree(vehicle, latestTelemetry, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
         if time.monotonic() - startedAt > PREFLIGHT_WAIT_TIMEOUT_SECONDS:
             raise RuntimeError("Preflight did not pass in time. The copter was not armed.")
         blocker = preflightBlocker(vehicle, latestTelemetry, runPrearmCommandId)
@@ -1194,21 +1198,31 @@ def releaseFalseBatteryFailsafe(vehicle, latestTelemetry, writeLine, confirmPara
     latestTelemetry["sawFalseBatteryWarning"] = False
 
 
-def boardAndGpsPuckCompassIds(vehicle):
-    internalCompassId = None
-    gpsPuckCompassId = None
-    for deviceIdParameter, externalParameter in COMPASS_SLOT_PARAMETERS:
+def boardAndGpsPuckCompasses(vehicle):
+    internalCompass = None
+    gpsPuckCompass = None
+    for deviceIdParameter, externalParameter, useParameter, messageName in COMPASS_SLOT_PARAMETERS:
         deviceId = int(round(float(vehicle.parameters[deviceIdParameter] or 0)))
         externalFlag = int(round(float(vehicle.parameters[externalParameter] or 0)))
+        compassSlot = {
+            "deviceId": deviceId,
+            "useParameter": useParameter,
+            "messageName": messageName,
+        }
         if deviceId == 0:
             continue
         if externalFlag in (1, 2):
-            gpsPuckCompassId = deviceId
+            gpsPuckCompass = compassSlot
         else:
-            internalCompassId = deviceId
-    if internalCompassId is None or gpsPuckCompassId is None:
+            internalCompass = compassSlot
+    if internalCompass is None or gpsPuckCompass is None:
         raise RuntimeError("Could not detect both the board compass and the GPS puck compass.")
-    return internalCompassId, gpsPuckCompassId
+    return internalCompass, gpsPuckCompass
+
+
+def boardAndGpsPuckCompassIds(vehicle):
+    internalCompass, gpsPuckCompass = boardAndGpsPuckCompasses(vehicle)
+    return internalCompass["deviceId"], gpsPuckCompass["deviceId"]
 
 
 def ensureBoardCompassIsPrimary(vehicle, rebootAndReconnect, writeLine, confirmParameter):
@@ -1247,6 +1261,129 @@ def rebootFlightVehicle(vehicle, connect, flightOutcome):
         reconnected._master.target_component = 1
     writeFlightLine(flightOutcome, "Pixhawk rebooted with the board compass as primary.")
     return reconnected
+
+
+def compassFieldIsUsable(magneticField):
+    if magneticField is None:
+        return False
+    return math.hypot(magneticField[0], magneticField[1], magneticField[2]) >= COMPASS_FIELD_MINIMUM
+
+
+def headingDifferenceDegrees(firstField, secondField):
+    """Smallest difference between the two compass headings, in degrees."""
+    firstHeading = math.atan2(firstField[1], firstField[0])
+    secondHeading = math.atan2(secondField[1], secondField[0])
+    wrappedDifference = math.atan2(
+        math.sin(secondHeading - firstHeading),
+        math.cos(secondHeading - firstHeading),
+    )
+    return abs(math.degrees(wrappedDifference))
+
+
+def sharedCompassHeadingDegrees(firstField, secondField):
+    """Circular mean of the two compass headings. This is the shared direction when they agree."""
+    firstHeading = math.atan2(firstField[1], firstField[0])
+    secondHeading = math.atan2(secondField[1], secondField[0])
+    meanHeading = math.atan2(
+        math.sin(firstHeading) + math.sin(secondHeading),
+        math.cos(firstHeading) + math.cos(secondHeading),
+    )
+    return math.degrees(meanHeading) % 360.0
+
+
+def requestCompassFieldMessages(vehicle):
+    from pymavlink import mavutil as middleMan
+    intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
+    for messageName in ("SCALED_IMU", "SCALED_IMU2"):
+        messageId = getattr(middleMan.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
+        if messageId is None:
+            continue
+        commandMessage = vehicle.message_factory.command_long_encode(
+            vehicle._master.target_system,
+            vehicle._master.target_component,
+            middleMan.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0,
+            messageId,
+            intervalMicroseconds,
+            0, 0, 0, 0, 0,
+        )
+        vehicle.send_mavlink(commandMessage)
+    vehicle.flush()
+
+
+def sampleCompassFields(vehicle):
+    capturedFields = {}
+
+    def rememberField(_vehicle, messageName, message):
+        capturedFields[messageName] = (float(message.xmag), float(message.ymag), float(message.zmag))
+
+    vehicle.add_message_listener("SCALED_IMU", rememberField)
+    vehicle.add_message_listener("SCALED_IMU2", rememberField)
+    requestCompassFieldMessages(vehicle)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and ("SCALED_IMU" not in capturedFields or "SCALED_IMU2" not in capturedFields):
+        time.sleep(0.05)
+    vehicle.remove_message_listener("SCALED_IMU", rememberField)
+    vehicle.remove_message_listener("SCALED_IMU2", rememberField)
+    return capturedFields
+
+
+def setCompassEnabled(vehicle, compassSlot, enabled, confirmParameter):
+    confirmParameter(vehicle, compassSlot["useParameter"], 1 if enabled else 0)
+
+
+def useOnlyThisCompass(vehicle, compassToUse, compassToIgnore, confirmParameter, choiceName):
+    setCompassEnabled(vehicle, compassToUse, True, confirmParameter)
+    setCompassEnabled(vehicle, compassToIgnore, False, confirmParameter)
+    vehicle.compassChoice = choiceName
+
+
+def preferPrimaryCompassWhenTheyDisagree(vehicle, latestTelemetry, writeLine, confirmParameter):
+    """The Pixhawk still says the compasses disagree. Keep the board compass for this flight."""
+    if getattr(vehicle, "compassChoice", None) == "board":
+        return
+    reasonText = (latestTelemetry.get("lastPrearmReason") or "").lower()
+    if "compasses inconsistent" not in reasonText:
+        return
+    internalCompass, gpsPuckCompass = boardAndGpsPuckCompasses(vehicle)
+    useOnlyThisCompass(vehicle, internalCompass, gpsPuckCompass, confirmParameter, "board")
+    latestTelemetry["lastPrearmReason"] = None
+    writeLine("Compasses disagree. This flight will use the board compass only.")
+
+
+def chooseCompassesForThisFlight(vehicle, writeLine, confirmParameter):
+    """Agree within 11 degrees: use both. Otherwise use the board compass, or the GPS puck if the board compass is dead."""
+    internalCompass, gpsPuckCompass = boardAndGpsPuckCompasses(vehicle)
+    compassFields = sampleCompassFields(vehicle)
+    boardField = compassFields.get(internalCompass["messageName"])
+    puckField = compassFields.get(gpsPuckCompass["messageName"])
+    boardIsAvailable = compassFieldIsUsable(boardField)
+    puckIsAvailable = compassFieldIsUsable(puckField)
+    if not boardIsAvailable and puckIsAvailable:
+        useOnlyThisCompass(vehicle, gpsPuckCompass, internalCompass, confirmParameter, "puck")
+        writeLine("The board compass is not available. This flight will use the GPS puck compass only.")
+        return
+    if boardIsAvailable and not puckIsAvailable:
+        useOnlyThisCompass(vehicle, internalCompass, gpsPuckCompass, confirmParameter, "board")
+        writeLine("The GPS puck compass is not available. This flight will use the board compass only.")
+        return
+    if not boardIsAvailable and not puckIsAvailable:
+        writeLine("Neither compass sent a usable magnetic field yet.")
+        return
+    differenceDegrees = headingDifferenceDegrees(boardField, puckField)
+    if differenceDegrees is None or differenceDegrees > COMPASS_AGREEMENT_LIMIT_DEGREES:
+        useOnlyThisCompass(vehicle, internalCompass, gpsPuckCompass, confirmParameter, "board")
+        differenceText = "an unknown amount" if differenceDegrees is None else f"{differenceDegrees:.1f} degrees"
+        writeLine(f"Compasses differ by {differenceText}. This flight will use the board compass only.")
+        return
+    setCompassEnabled(vehicle, internalCompass, True, confirmParameter)
+    setCompassEnabled(vehicle, gpsPuckCompass, True, confirmParameter)
+    vehicle.compassChoice = "both"
+    sharedHeading = sharedCompassHeadingDegrees(boardField, puckField)
+    writeLine(
+        f"Compasses agree within {differenceDegrees:.1f} degrees. Both stay on. "
+        f"The shared heading is {sharedHeading:.1f} degrees."
+    )
 
 
 def checkFlightHealthAndCeiling(vehicle, flightOutcome):
@@ -1487,6 +1624,7 @@ def runTurnMission():
         activeFlightVehicle = vehicle
         latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
+        chooseCompassesForThisFlight(vehicle, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
         waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]
         if savedSlew is not None:

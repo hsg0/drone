@@ -95,6 +95,100 @@
   background: #e6b6ff;
 }
 
+.closePerimeterButton,
+.clearPerimeterButton,
+.savePerimeterButton,
+.armPerimeterButton,
+.disarmPerimeterButton,
+.flyPerimeterButton {
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.closePerimeterButton {
+  color: #2a1600;
+  background: #ff9f1c;
+  box-shadow: 0 0 22px rgba(255, 159, 28, 0.85);
+}
+
+.clearPerimeterButton {
+  color: #2a2200;
+  background: #ffe66d;
+  box-shadow: 0 0 22px rgba(255, 230, 109, 0.85);
+}
+
+.savePerimeterButton {
+  color: #041428;
+  background: #4ea8ff;
+  box-shadow: 0 0 22px rgba(78, 168, 255, 0.9);
+}
+
+.armPerimeterButton {
+  color: #042018;
+  background: #2ee6a6;
+  box-shadow: 0 0 22px rgba(46, 230, 166, 0.85);
+}
+
+.disarmPerimeterButton {
+  color: #2a0814;
+  background: #ff5d8f;
+  box-shadow: 0 0 22px rgba(255, 93, 143, 0.85);
+}
+
+.flyPerimeterButton {
+  color: #f7f4ff;
+  background: #7c5cff;
+  box-shadow: 0 0 22px rgba(124, 92, 255, 0.9);
+}
+
+.closePerimeterButton:hover:not(:disabled) {
+  background: #ffc56a;
+  box-shadow: 0 0 28px rgba(255, 197, 106, 1);
+  transform: translateY(-3px);
+}
+
+.clearPerimeterButton:hover:not(:disabled) {
+  background: #fff3a8;
+  box-shadow: 0 0 28px rgba(255, 243, 168, 1);
+  transform: translateY(-3px);
+}
+
+.savePerimeterButton:hover:not(:disabled) {
+  background: #8cc6ff;
+  box-shadow: 0 0 28px rgba(140, 198, 255, 1);
+  transform: translateY(-3px);
+}
+
+.armPerimeterButton:hover:not(:disabled) {
+  background: #7dffd0;
+  box-shadow: 0 0 28px rgba(125, 255, 208, 1);
+  transform: translateY(-3px);
+}
+
+.disarmPerimeterButton:hover:not(:disabled) {
+  background: #ff9bc0;
+  box-shadow: 0 0 28px rgba(255, 155, 192, 1);
+  transform: translateY(-3px);
+}
+
+.flyPerimeterButton:hover:not(:disabled) {
+  background: #a894ff;
+  box-shadow: 0 0 28px rgba(168, 148, 255, 1);
+  transform: translateY(-3px);
+}
+
+button.brightButton.closePerimeterButton:disabled,
+button.brightButton.clearPerimeterButton:disabled,
+button.brightButton.savePerimeterButton:disabled,
+button.brightButton.armPerimeterButton:disabled,
+button.brightButton.disarmPerimeterButton:disabled,
+button.brightButton.flyPerimeterButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+  box-shadow: none;
+  transform: none;
+  filter: grayscale(0.35);
+}
+
 .objectDetectionButton {
   color: #2a0808;
   background: #ff6b6b;
@@ -106,7 +200,10 @@
 }
 
 .cameraPicture {
-  width: min(900px, 100%);
+  width: min(100%, calc(68svh * 4 / 3));
+  max-height: 68svh;
+  height: auto;
+  object-fit: contain;
   border-radius: 16px;
   background: #000000;
   display: block;
@@ -272,12 +369,26 @@ button.brightButton:disabled {
   gap: 4px;
   padding: 12px 14px;
   border-bottom: 1px solid rgba(215, 228, 240, 0.2);
+  scroll-margin-top: 16px;
 }
 
 .positionList .currentPosition {
   border: 3px solid #2ee6ff;
   border-radius: 12px;
   background: rgba(46, 230, 255, 0.16);
+}
+
+.spinPictures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.spinPictures img {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
 }
 
 .savedResult {
