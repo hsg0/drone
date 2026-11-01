@@ -3,8 +3,9 @@
 #       A bad request or a failed save must not stop the backend.
 # HOW — list, read, and save call the flight log model. fly10FeetEWNSLand runs
 #       the Pixhawk flight, then the model stores the outcome.
-# IMPORTANT — the flight arms only when the request body says {"confirm": "YES"}.
-#             There is no force-arm and no force-disarm.
+# IMPORTANT — the east-west-north-south flight connects first and waits for a
+#             GPS 3D fix. YES is accepted only after that fix. There is no
+#             force-arm and no force-disarm.
 
 import asyncio
 import json
@@ -93,6 +94,7 @@ MINIMUM_VALID_COORDINATE_DEGREES = 0.01
 TAKEOFF_TIMEOUT_SECONDS = 30.0
 LAND_TIMEOUT_SECONDS = 60.0
 PREFLIGHT_WAIT_TIMEOUT_SECONDS = 180.0
+YES_AFTER_FIX_WAIT_SECONDS = 60.0
 MODE_CHANGE_TIMEOUT_SECONDS = 10.0
 ARM_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_STALE_AFTER_SECONDS = 3.0
@@ -153,6 +155,8 @@ flightGuard = asyncio.Lock()
 flightStopRequested = False
 flightReturnHomeRequested = False
 flightClearRequested = False
+ewnsWaitingForYes = False
+ewnsYesAfterFix = threading.Event()
 activeFlightVehicle = None
 activeFlightOutcome = None
 flightProgressLock = threading.RLock()
@@ -181,22 +185,24 @@ latestFlightProgress = {
     "stopReason": None,
     "startedAt": None,
 }
+ewnsTelemetry = {
+    "latitude": None,
+    "longitude": None,
+    "satelliteCount": None,
+    "fixType": None,
+    "boardCompassDegrees": None,
+    "gpsCompassDegrees": None,
+}
+lastEwnsTelemetryAt = 0.0
+ewnsTelemetryWatchers = set()
+ewnsPageTelemetryStop = threading.Event()
+ewnsPageTelemetryThread = None
+ewnsPageTelemetryLock = threading.Lock()
 
 
 async def fly10FeetEWNSLand(request):
     global flightIsRunning
     try:
-        confirmationText = await confirmationTextFromRequest(request)
-        if confirmationText != "YES":
-            cancelledOutcome = {
-                "scriptName": "fly10FeetEWNSLand",
-                "started": False,
-                "outcome": "CANCELLED BEFORE ARMING",
-                "stopReason": "The request did not say YES. The copter was not armed.",
-            }
-            cancelledOutcome["id"] = saveFlightLog(cancelledOutcome)
-            return cancelledOutcome
-
         from controllers.calibration import calibrationIsRunning
 
         async with flightGuard:
@@ -228,13 +234,17 @@ async def fly10FeetEWNSLand(request):
                 }
             resetFlightControlFlags()
             flightIsRunning = True
-        beginFlightProgress("fly10FeetEWNSLand")
+        beginFlightProgress(
+            "fly10FeetEWNSLand",
+            "Opening the Pixhawk. YES waits until the copter has a satellite fix.",
+        )
 
         try:
             flightOutcome = await asyncio.to_thread(runFly10FeetEastWestNorthSouthLand)
         finally:
             async with flightGuard:
                 flightIsRunning = False
+            restartEwnsPageTelemetryIfWatched()
 
         flightOutcome["id"] = saveFlightLog(flightOutcome)
         publishFlightSnapshot(flightOutcome, running=False)
@@ -251,6 +261,25 @@ async def fly10FeetEWNSLand(request):
         return failedOutcome
 
 
+async def acceptFly10FeetEWNSLandYes(request):
+    confirmationText = await confirmationTextFromRequest(request)
+    if confirmationText != "YES":
+        return {
+            "accepted": False,
+            "message": "YES was not sent. The copter was not armed.",
+        }
+    if not ewnsWaitingForYes:
+        return {
+            "accepted": False,
+            "message": "The satellite fix is not in yet. YES was not sent.",
+        }
+    ewnsYesAfterFix.set()
+    return {
+        "accepted": True,
+        "message": "YES sent after the satellite fix.",
+    }
+
+
 async def confirmationTextFromRequest(request):
     try:
         rawBody = await request.body()
@@ -265,10 +294,12 @@ async def confirmationTextFromRequest(request):
 
 
 def resetFlightControlFlags():
-    global flightStopRequested, flightReturnHomeRequested, flightClearRequested, activeFlightVehicle, activeFlightOutcome
+    global flightStopRequested, flightReturnHomeRequested, flightClearRequested, activeFlightVehicle, activeFlightOutcome, ewnsWaitingForYes
     flightStopRequested = False
     flightReturnHomeRequested = False
     flightClearRequested = False
+    ewnsWaitingForYes = False
+    ewnsYesAfterFix.clear()
     activeFlightVehicle = None
     activeFlightOutcome = None
 
@@ -296,6 +327,7 @@ def runFly10FeetEastWestNorthSouthLand():
 
     try:
         writeFlightLine(flightOutcome, "TAKE OFF TO 5 FT -> HOVER 10S -> EAST 10 FT -> HOVER 10S -> WEST 10 FT -> HOVER 10S -> NORTH 10 FT -> HOVER 10S -> SOUTH 10 FT -> HOVER 10S -> LAND")
+        releaseEwnsPageTelemetry()
         if not os.path.exists(PIXHAWK_PORT):
             raise RuntimeError(f"{PIXHAWK_PORT} is missing. Run the backend on the Raspberry Pi.")
 
@@ -334,6 +366,9 @@ def runFly10FeetEastWestNorthSouthLand():
         activeFlightVehicle = vehicle
         latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
+        startEwnsTelemetry(vehicle, middleMan)
+        waitUntilSatelliteFix(vehicle, flightOutcome)
+        waitForYesAfterSatelliteFix(flightOutcome)
         chooseCompassesForThisFlight(vehicle, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
         waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
 
@@ -634,15 +669,16 @@ def returnHomeUntilLanded(vehicle, flightOutcome, vehicleMode):
     writeFlightLine(flightOutcome, "Back at the takeoff spot. Motors disarmed and propellers stopped.")
 
 
-def beginFlightProgress(scriptName):
+def beginFlightProgress(scriptName, firstLine="YES received. Opening the Pixhawk."):
     publishFlightSnapshot(
         {
             "scriptName": scriptName,
             "startedAt": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
-            "lines": ["YES received. Opening the Pixhawk."],
+            "lines": [firstLine],
             "repeatCount": 1,
             "outcome": None,
             "stopReason": None,
+            "satelliteFixReady": False,
         },
         running=True,
     )
@@ -669,6 +705,7 @@ def publishFlightSnapshot(flightOutcome, running):
         "lines": lines[-80:],
         "stopReason": None if running else flightOutcome.get("stopReason"),
         "startedAt": flightOutcome.get("startedAt"),
+        "satelliteFixReady": bool(flightOutcome.get("satelliteFixReady")),
     }
     sendFlightProgress(latestFlightProgress)
 
@@ -721,6 +758,266 @@ def listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome):
     return latestTelemetry
 
 
+def readEwnsTelemetry():
+    with flightProgressLock:
+        return dict(ewnsTelemetry)
+
+
+def magneticHeadingDegrees(eastField, northField):
+    if eastField is None or northField is None:
+        return None
+    if float(eastField) == 0.0 and float(northField) == 0.0:
+        return None
+    return round((math.degrees(math.atan2(eastField, northField)) + 360.0) % 360.0, 1)
+
+
+def rememberEwnsTelemetry(force=False, **fields):
+    global lastEwnsTelemetryAt
+    now = time.monotonic()
+    with flightProgressLock:
+        if fields:
+            ewnsTelemetry.update(fields)
+        ewnsTelemetry["updatedAt"] = time.strftime("%H:%M:%S")
+        if not force and now - lastEwnsTelemetryAt < 1.0:
+            return
+        lastEwnsTelemetryAt = now
+        snapshot = dict(ewnsTelemetry)
+    publishEwnsTelemetry(snapshot)
+
+
+def publishEwnsTelemetry(snapshot):
+    if flightProgressLoop is None:
+        return
+
+    def pushTelemetry(telemetrySnapshot=snapshot):
+        from controllers.flightPlan import perimeterSocket
+        asyncio.create_task(perimeterSocket.emit("ewns-telemetry", telemetrySnapshot))
+
+    try:
+        flightProgressLoop.call_soon_threadsafe(pushTelemetry)
+    except Exception as error:
+        print(f"Flight telemetry was not sent on socket.io: {error}")
+
+
+def startEwnsTelemetry(vehicle, middleMan):
+    """Listen for position, satellite count, and both compass directions during this flight."""
+    for messageName in ("SCALED_IMU", "SCALED_IMU2"):
+        messageId = getattr(middleMan.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
+        if messageId is None:
+            continue
+        commandMessage = vehicle.message_factory.command_long_encode(
+            vehicle._master.target_system,
+            vehicle._master.target_component,
+            middleMan.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0,
+            messageId,
+            int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND),
+            0, 0, 0, 0, 0,
+        )
+        vehicle.send_mavlink(commandMessage)
+    vehicle.flush()
+
+    def onGps(_vehicle, _name, message):
+        rememberEwnsTelemetry(
+            latitude=None if message.lat is None else round(message.lat / 1e7, 7),
+            longitude=None if message.lon is None else round(message.lon / 1e7, 7),
+            satelliteCount=None if message.satellites_visible is None else int(message.satellites_visible),
+            fixType=None if message.fix_type is None else int(message.fix_type),
+        )
+
+    def onBoardCompass(_vehicle, _name, message):
+        rememberEwnsTelemetry(boardCompassDegrees=magneticHeadingDegrees(message.ymag, message.xmag))
+
+    def onGpsCompass(_vehicle, _name, message):
+        rememberEwnsTelemetry(gpsCompassDegrees=magneticHeadingDegrees(message.ymag, message.xmag))
+
+    vehicle.add_message_listener("GPS_RAW_INT", onGps)
+    vehicle.add_message_listener("SCALED_IMU", onBoardCompass)
+    vehicle.add_message_listener("SCALED_IMU2", onGpsCompass)
+    vehicle.ewnsTelemetryListeners = (onGps, onBoardCompass, onGpsCompass)
+
+
+def stopEwnsTelemetry(vehicle):
+    if vehicle is None:
+        return
+    listeners = getattr(vehicle, "ewnsTelemetryListeners", None)
+    if listeners is None:
+        return
+    onGps, onBoardCompass, onGpsCompass = listeners
+    for messageName, listener in (
+        ("GPS_RAW_INT", onGps),
+        ("SCALED_IMU", onBoardCompass),
+        ("SCALED_IMU2", onGpsCompass),
+    ):
+        try:
+            vehicle.remove_message_listener(messageName, listener)
+        except Exception:
+            pass
+
+
+def noteEwnsTelemetryWatcher(sid):
+    with ewnsPageTelemetryLock:
+        ewnsTelemetryWatchers.add(sid)
+        startEwnsPageTelemetryLocked()
+
+
+def forgetEwnsTelemetryWatcher(sid):
+    with ewnsPageTelemetryLock:
+        ewnsTelemetryWatchers.discard(sid)
+        watcherRemains = bool(ewnsTelemetryWatchers)
+    if watcherRemains or flightIsRunning:
+        return
+    threading.Thread(target=stopEwnsPageTelemetryAfterPause, name="ewns-telemetry-stop", daemon=True).start()
+
+
+def stopEwnsPageTelemetryAfterPause():
+    """A page refresh disconnects for a moment. Wait before closing the Pixhawk."""
+    time.sleep(2.0)
+    with ewnsPageTelemetryLock:
+        if ewnsTelemetryWatchers or flightIsRunning:
+            return
+        stopEwnsPageTelemetryLocked()
+
+
+def releaseEwnsPageTelemetry():
+    """Close the page's Pixhawk reader so a flight or calibration can use the command cable."""
+    with ewnsPageTelemetryLock:
+        stopEwnsPageTelemetryLocked()
+
+
+def restartEwnsPageTelemetryIfWatched():
+    with ewnsPageTelemetryLock:
+        if ewnsTelemetryWatchers and not flightIsRunning:
+            startEwnsPageTelemetryLocked()
+
+
+def startEwnsPageTelemetryLocked():
+    global ewnsPageTelemetryThread
+    if flightIsRunning:
+        return
+    if ewnsPageTelemetryThread is not None and ewnsPageTelemetryThread.is_alive():
+        return
+    if not os.path.exists(PIXHAWK_PORT):
+        print(f"Page telemetry did not start. {PIXHAWK_PORT} is missing.")
+        return
+    ewnsPageTelemetryStop.clear()
+    ewnsPageTelemetryThread = threading.Thread(
+        target=ewnsPageTelemetryLoop,
+        name="ewns-page-telemetry",
+        daemon=True,
+    )
+    ewnsPageTelemetryThread.start()
+
+
+def stopEwnsPageTelemetryLocked():
+    global ewnsPageTelemetryThread
+    ewnsPageTelemetryStop.set()
+    thread = ewnsPageTelemetryThread
+    if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+        thread.join(timeout=4)
+    if ewnsPageTelemetryThread is thread:
+        ewnsPageTelemetryThread = None
+
+
+def rememberPageTelemetryMessage(message, boardUsesFirstCompass):
+    messageType = message.get_type()
+    if messageType == "GPS_RAW_INT":
+        latitude = None if message.lat in (None, 0) else round(message.lat / 1e7, 7)
+        longitude = None if message.lon in (None, 0) else round(message.lon / 1e7, 7)
+        satelliteCount = None if message.satellites_visible in (None, 255) else int(message.satellites_visible)
+        rememberEwnsTelemetry(
+            latitude=latitude,
+            longitude=longitude,
+            satelliteCount=satelliteCount,
+            fixType=None if message.fix_type is None else int(message.fix_type),
+        )
+        return
+    heading = magneticHeadingDegrees(message.ymag, message.xmag)
+    if messageType == "SCALED_IMU":
+        fieldName = "boardCompassDegrees" if boardUsesFirstCompass else "gpsCompassDegrees"
+    else:
+        fieldName = "gpsCompassDegrees" if boardUsesFirstCompass else "boardCompassDegrees"
+    rememberEwnsTelemetry(**{fieldName: heading})
+
+
+def compassExternalFlag(connection, parameterName):
+    connection.mav.param_request_read_send(connection.target_system, connection.target_component, parameterName.encode("ascii"), -1)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        message = connection.recv_match(type="PARAM_VALUE", blocking=True, timeout=0.4)
+        if message is None:
+            continue
+        name = message.param_id
+        if isinstance(name, bytes):
+            name = name.decode("ascii", errors="ignore")
+        name = str(name).rstrip("\x00")
+        if name == parameterName:
+            return int(round(float(message.param_value)))
+    return None
+
+
+def ewnsPageTelemetryLoop():
+    from pymavlink import mavutil
+    connection = None
+    try:
+        connection = mavutil.mavlink_connection(PIXHAWK_PORT, baud=PIXHAWK_BAUD, source_system=GROUND_STATION_SYSTEM_ID)
+        heartbeat = connection.wait_heartbeat(timeout=15)
+        if heartbeat is None:
+            print("Page telemetry found no Pixhawk heartbeat.")
+            return
+        if connection.target_component == 0:
+            connection.target_component = 1
+        firstCompassExternal = compassExternalFlag(connection, "COMPASS_EXTERNAL")
+        boardUsesFirstCompass = firstCompassExternal not in (1, 2)
+        requestTelemetryMessages(connection)
+        lastHeartbeatAt = 0.0
+        while not ewnsPageTelemetryStop.is_set():
+            now = time.monotonic()
+            if now - lastHeartbeatAt >= 1.0:
+                connection.mav.heartbeat_send(
+                    mavutil.mavlink.MAV_TYPE_GCS,
+                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                    0,
+                    0,
+                    0,
+                )
+                lastHeartbeatAt = now
+                rememberEwnsTelemetry(force=True)
+            message = connection.recv_match(
+                type=["GPS_RAW_INT", "SCALED_IMU", "SCALED_IMU2"],
+                blocking=True,
+                timeout=0.5,
+            )
+            if message is None:
+                continue
+            rememberPageTelemetryMessage(message, boardUsesFirstCompass)
+    except Exception as error:
+        print(f"Page telemetry stopped: {error}")
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+
+def requestTelemetryMessages(connection):
+    from pymavlink import mavutil
+    for messageName in ("GPS_RAW_INT", "SCALED_IMU", "SCALED_IMU2"):
+        messageId = getattr(mavutil.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
+        if messageId is None:
+            continue
+        connection.mav.command_long_send(
+            connection.target_system,
+            connection.target_component,
+            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0,
+            messageId,
+            int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND),
+            0, 0, 0, 0, 0,
+        )
+
+
 def requestFlightStreams(vehicle, middleMan):
     intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
     for messageName in FLIGHT_MESSAGE_NAMES:
@@ -738,6 +1035,54 @@ def requestFlightStreams(vehicle, middleMan):
         )
         vehicle.send_mavlink(commandMessage)
     vehicle.flush()
+
+
+def waitUntilSatelliteFix(vehicle, flightOutcome):
+    startedAt = time.monotonic()
+    writeFlightLine(flightOutcome, "Waiting for a GPS 3D fix and at least 5 satellites. YES is not sent yet.")
+    while True:
+        raiseIfFlightStopped()
+        if time.monotonic() - startedAt > PREFLIGHT_WAIT_TIMEOUT_SECONDS:
+            raise RuntimeError("No satellite fix in time. YES was not sent. The copter was not armed.")
+        blocker = satelliteFixBlocker(vehicle)
+        if blocker is None:
+            gpsReading = vehicle.gps_0
+            writeFlightLine(
+                flightOutcome,
+                f"Satellite fix is in. Fix type {int(gpsReading.fix_type)}, {int(gpsReading.satellites_visible)} satellites.",
+            )
+            return
+        writeFlightLine(flightOutcome, f"Waiting. {blocker}")
+        time.sleep(PRINT_INTERVAL_SECONDS)
+
+
+def satelliteFixBlocker(vehicle):
+    gpsReading = vehicle.gps_0
+    satellites = None if gpsReading is None else gpsReading.satellites_visible
+    if gpsReading is None or gpsReading.fix_type is None or int(gpsReading.fix_type) < MINIMUM_GPS_FIX_TYPE:
+        return f"GPS 3D fix required. Satellites: {satellites}."
+    if satellites is None or satellites == UNKNOWN_SATELLITE_COUNT or satellites < MINIMUM_SATELLITE_COUNT:
+        return f"At least {MINIMUM_SATELLITE_COUNT} satellites required. Seeing {satellites}."
+    return None
+
+
+def waitForYesAfterSatelliteFix(flightOutcome):
+    global ewnsWaitingForYes
+    ewnsYesAfterFix.clear()
+    ewnsWaitingForYes = True
+    flightOutcome["satelliteFixReady"] = True
+    writeFlightLine(flightOutcome, "Satellite fix is in. YES can be sent now.")
+    deadline = time.monotonic() + YES_AFTER_FIX_WAIT_SECONDS
+    try:
+        while time.monotonic() < deadline:
+            raiseIfFlightStopped()
+            if ewnsYesAfterFix.wait(0.5):
+                writeFlightLine(flightOutcome, "YES received after the satellite fix.")
+                return
+        raise RuntimeError("Satellite fix is in, but YES was not sent. The copter was not armed.")
+    finally:
+        ewnsWaitingForYes = False
+        flightOutcome["satelliteFixReady"] = False
 
 
 def waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome):
@@ -1072,6 +1417,7 @@ def landUntilPropellersStop(vehicle, flightOutcome, vehicleMode):
 
 
 def finishFlightConnection(vehicle, droneKitTools, flightOutcome, copterWasArmed, landingWasStarted, savedFailsafe, originalTakeoffSlewSeconds):
+    stopEwnsTelemetry(vehicle)
     try:
         if vehicle is not None and not getattr(vehicle, "commandCableClosed", False):
             if flightClearRequested and not getattr(vehicle, "armed", False):
@@ -1517,17 +1863,6 @@ YAW_CLOCKWISE = 1
 async def fly10FeetE360W360N360S360Land(request):
     global flightIsRunning
     try:
-        confirmationText = await confirmationTextFromRequest(request)
-        if confirmationText != "YES":
-            cancelledOutcome = {
-                "scriptName": "fly10FeetE360W360N360S360Land",
-                "started": False,
-                "outcome": "CANCELLED BEFORE ARMING",
-                "stopReason": "The request did not say YES. The copter was not armed.",
-            }
-            cancelledOutcome["id"] = saveFlightLog(cancelledOutcome)
-            return cancelledOutcome
-
         from controllers.calibration import calibrationIsRunning
         from controllers.motorTest import motorTestIsRunning
         from controllers.flightPlan import flightPlanIsRunning, flightPlanVehicle
@@ -1541,12 +1876,16 @@ async def fly10FeetE360W360N360S360Land(request):
                 }
             resetFlightControlFlags()
             flightIsRunning = True
-        beginFlightProgress("fly10FeetE360W360N360S360Land")
+        beginFlightProgress(
+            "fly10FeetE360W360N360S360Land",
+            "Opening the Pixhawk. YES waits until the copter has a satellite fix.",
+        )
         try:
             flightOutcome = await asyncio.to_thread(runTurnMission)
         finally:
             async with flightGuard:
                 flightIsRunning = False
+            restartEwnsPageTelemetryIfWatched()
         flightOutcome["id"] = saveFlightLog(flightOutcome)
         publishFlightSnapshot(flightOutcome, running=False)
         return flightOutcome
@@ -1587,6 +1926,7 @@ def runTurnMission():
             flightOutcome,
             "TAKE OFF TO 6 FT -> HOVER AT 7 FT FOR 10S -> 360 CLOCKWISE -> HOVER 5S -> EAST 10 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> WEST 20 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> EAST 10 FT -> HOVER 5S -> NORTH 10 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> SOUTH 10 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> LAND",
         )
+        releaseEwnsPageTelemetry()
         if not os.path.exists(PIXHAWK_PORT):
             raise RuntimeError(f"{PIXHAWK_PORT} is missing. Run the backend on the Raspberry Pi.")
         from dronekit import VehicleMode
@@ -1624,6 +1964,9 @@ def runTurnMission():
         activeFlightVehicle = vehicle
         latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
+        startEwnsTelemetry(vehicle, middleMan)
+        waitUntilSatelliteFix(vehicle, flightOutcome)
+        waitForYesAfterSatelliteFix(flightOutcome)
         chooseCompassesForThisFlight(vehicle, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
         waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]

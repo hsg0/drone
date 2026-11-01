@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { clearFly10FeetEastWestNorthSouthLand, fly10FeetEastWestNorthSouthLand, readFlightLogs, returnFly10FeetEastWestNorthSouthLandHome, stopFly10FeetEastWestNorthSouthLand, watchFlightProgress } from "../backend-call/callBackend.js"
+import { clearFly10FeetEastWestNorthSouthLand, fly10FeetEastWestNorthSouthLand, readFlightLogs, returnFly10FeetEastWestNorthSouthLandHome, sendFly10FeetEastWestNorthSouthYes, stopFly10FeetEastWestNorthSouthLand, watchEwnsTelemetry, watchFlightProgress } from "../backend-call/callBackend.js"
 import { LiveFlightSteps } from "./liveFlightSteps.jsx"
 
 function Fly10EastWestNorthSouth() {
@@ -10,7 +10,10 @@ function Fly10EastWestNorthSouth() {
   const [flightIsRunning, setFlightIsRunning] = useState(false)
   const [liveProgress, setLiveProgress] = useState(null)
   const [liveConnection, setLiveConnection] = useState("connecting")
+  const [telemetry, setTelemetry] = useState(null)
+  const [telemetryConnection, setTelemetryConnection] = useState("connecting")
   const flyRequestRef = useRef(null)
+  const yesSentRef = useRef(false)
 
   useEffect(() => {
     let pageIsOpen = true
@@ -33,6 +36,20 @@ function Fly10EastWestNorthSouth() {
   useEffect(() => {
     return watchFlightProgress(setLiveProgress, setLiveConnection)
   }, [])
+
+  useEffect(() => {
+    return watchEwnsTelemetry(setTelemetry, setTelemetryConnection)
+  }, [])
+
+  useEffect(() => {
+    if (!flightIsRunning || yesSentRef.current || !liveProgress?.satelliteFixReady) return
+    yesSentRef.current = true
+    setFlightReply("Satellite fix is in. Sending YES.")
+    sendFly10FeetEastWestNorthSouthYes().catch((error) => {
+      yesSentRef.current = false
+      setFlightReply(error?.message || "YES was not sent after the satellite fix.")
+    })
+  }, [flightIsRunning, liveProgress])
 
   const ewnsIsRunning = flightIsRunning || (liveProgress?.running && liveProgress?.scriptName === "fly10FeetEWNSLand")
 
@@ -71,8 +88,9 @@ function Fly10EastWestNorthSouth() {
   async function startFlight() {
     const controller = new AbortController()
     flyRequestRef.current = controller
+    yesSentRef.current = false
     setFlightIsRunning(true)
-    setFlightReply("Flight requested. Waiting for the copter to finish.")
+    setFlightReply("Connecting. YES is sent after the copter has a satellite fix.")
     try {
       const reply = await fly10FeetEastWestNorthSouthLand(controller.signal)
       const outcome = reply?.outcome || "No outcome"
@@ -104,7 +122,7 @@ function Fly10EastWestNorthSouth() {
           onClick={startFlight}
           disabled={ewnsIsRunning}
         >
-          {ewnsIsRunning ? "Flying..." : "Fly — sends YES"}
+          {ewnsIsRunning ? "Flying..." : "Fly — YES after satellite fix"}
         </button>
         <button
           className="brightButton homeButton"
@@ -123,6 +141,16 @@ function Fly10EastWestNorthSouth() {
           Stop and land
         </button>
       </div>
+      <section className="planFacts">
+        <h2>Telemetry</h2>
+        <p className="liveLine">Socket.io: {telemetryConnection}</p>
+        <p className="liveLine">Updated: {telemetry?.updatedAt || "waiting"}</p>
+        <p>Latitude: {formatCoordinate(telemetry?.latitude)}</p>
+        <p>Longitude: {formatCoordinate(telemetry?.longitude)}</p>
+        <p>Satellites: {formatCount(telemetry?.satelliteCount)}{telemetry?.fixType >= 3 ? ", 3D fix" : ""}</p>
+        <p>Board compass direction: {formatCompassDirection(telemetry?.boardCompassDegrees)}</p>
+        <p>GPS compass direction: {formatCompassDirection(telemetry?.gpsCompassDegrees)}</p>
+      </section>
       {flightReply ? <p>{flightReply}</p> : null}
       <LiveFlightSteps progress={liveProgress} connection={liveConnection} />
       <section className="logList">
@@ -141,6 +169,29 @@ function Fly10EastWestNorthSouth() {
       </Link>
     </main>
   )
+}
+
+function formatCoordinate(value) {
+  if (value == null) return "waiting"
+  const number = Number(value)
+  if (!Number.isFinite(number) || number === 0) return "waiting"
+  return number.toFixed(6)
+}
+
+function formatCount(value) {
+  if (value == null) return "waiting"
+  const number = Number(value)
+  if (!Number.isFinite(number)) return "waiting"
+  return String(number)
+}
+
+function formatCompassDirection(value) {
+  if (value == null) return "waiting"
+  const degrees = Number(value)
+  if (!Number.isFinite(degrees)) return "waiting"
+  const names = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"]
+  const name = names[Math.round(degrees / 45) % 8]
+  return `${degrees.toFixed(1)}° ${name}`
 }
 
 export default Fly10EastWestNorthSouth

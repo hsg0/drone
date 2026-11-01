@@ -116,6 +116,22 @@ perimeterSocket = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="
 @perimeterSocket.event
 async def connect(sid, _environ):
     await perimeterSocket.emit("perimeter-progress", readPerimeterProgress(), to=sid)
+    from controllers.calibration import readCalibrationProgress
+    await perimeterSocket.emit("calibration-progress", readCalibrationProgress(), to=sid)
+    from controllers.flightController import readEwnsTelemetry
+    await perimeterSocket.emit("ewns-telemetry", readEwnsTelemetry(), to=sid)
+
+
+@perimeterSocket.on("watch-ewns-telemetry")
+async def watchEwnsTelemetry(sid):
+    from controllers.flightController import noteEwnsTelemetryWatcher
+    noteEwnsTelemetryWatcher(sid)
+
+
+@perimeterSocket.event
+async def disconnect(sid):
+    from controllers.flightController import forgetEwnsTelemetryWatcher
+    forgetEwnsTelemetryWatcher(sid)
 
 
 def rememberPerimeterLoop(loop):
@@ -973,6 +989,8 @@ def connectForPlan():
             flightPlanVehicle = None
     if not os.path.exists(PIXHAWK_PORT):
         raise RuntimeError(f"{PIXHAWK_PORT} is missing. Run the backend on the Raspberry Pi.")
+    from controllers.flightController import releaseEwnsPageTelemetry
+    releaseEwnsPageTelemetry()
     from dronekit import connect
     from pymavlink import mavutil as middleMan
     vehicle = connect(

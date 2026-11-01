@@ -15,6 +15,7 @@ from controllers.flightController import (
     flightProgressQueues,
     fly10FeetE360W360N360S360Land,
     fly10FeetEWNSLand,
+    acceptFly10FeetEWNSLandYes,
     listFlightLogs,
     clearFly10FeetEWNSLand,
     returnFly10FeetEWNSLandHome,
@@ -75,6 +76,16 @@ async def postFlight(request: Request):
 @flightRouter.post("/flights/fly10FeetEWNSLand")
 async def postFly10FeetEWNSLand(request: Request):
     return await fly10FeetEWNSLand(request)
+
+
+@flightRouter.post("/flights/fly10FeetEWNSLand/yes")
+async def postFly10FeetEWNSLandYes(request: Request):
+    return await acceptFly10FeetEWNSLandYes(request)
+
+
+@flightRouter.post("/flights/fly10FeetE360W360N360S360Land/yes")
+async def postFly10FeetTurnMissionYes(request: Request):
+    return await acceptFly10FeetEWNSLandYes(request)
 
 
 @flightRouter.post("/flights/fly10FeetEWNSLand/stop")

@@ -300,6 +300,8 @@ def openMotorTestConnection():
         return motorTestConnection
     if not os.path.exists(PIXHAWK_PORT):
         raise RuntimeError(f"{PIXHAWK_PORT} is missing. Run the backend on the Raspberry Pi.")
+    from controllers.flightController import releaseEwnsPageTelemetry
+    releaseEwnsPageTelemetry()
     from pymavlink import mavutil as middleMan
     connection = middleMan.mavlink_connection(
         PIXHAWK_PORT,

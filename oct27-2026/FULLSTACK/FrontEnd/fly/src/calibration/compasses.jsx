@@ -123,6 +123,8 @@ function CalibrateCompasses() {
   useEffect(() => {
     scrollToCalibrationStep(currentPosition)
   }, [currentPosition])
+  const turnDegrees = Array.isArray(progress?.turnDegrees) ? progress.turnDegrees : []
+  const poseRecorded = Array.isArray(progress?.poseRecorded) ? progress.poseRecorded : []
   const boardPercent = clampPercent(progress?.primaryPercent)
   const gpsPercent = clampPercent(progress?.secondaryPercent)
   const reports = savedResult?.compassReports || progress?.compassReports || []
@@ -132,8 +134,8 @@ function CalibrateCompasses() {
       <h1>Calibrate drone compasses</h1>
       <p className="liveLine">Live connection: {liveConnection}</p>
       <p>
-        Each step is one pose, then one clockwise 360 turn in that pose. Do not tumble the drone during the turn.
-        Change pose only when the highlighted step changes. Both percentages have to climb. The result is saved at the end.
+        Put the copter in a pose, then turn it one full circle in that pose. The highlighted step follows the pose the copter is in.
+        A step says "Turn recorded" after that circle. Both compass percentages still have to reach 100 before the calibration is saved.
       </p>
       <button
         className="brightButton calibrationButton"
@@ -148,6 +150,17 @@ function CalibrateCompasses() {
       <section className="currentDirection">
         <h2>{currentStep ? currentStep.title : "Waiting to start"}</h2>
         <p>{currentStep ? currentStep.direction : progress?.instruction}</p>
+        {currentPosition >= 1 ? (
+          <>
+            <p className="liveLine">
+              {poseTurnText(turnDegrees[currentPosition - 1], poseRecorded[currentPosition - 1])}
+            </p>
+            <PercentBar
+              label="This turn"
+              percent={turnPercent(turnDegrees[currentPosition - 1], poseRecorded[currentPosition - 1])}
+            />
+          </>
+        ) : null}
         {currentStep?.pictures ? <SpinPictures pictures={currentStep.pictures} /> : null}
         {currentStep && progress?.instruction ? <p className="liveLine">{progress.instruction}</p> : null}
       </section>
@@ -156,6 +169,10 @@ function CalibrateCompasses() {
         <PercentBar label="Board compass" percent={boardPercent} />
         <PercentBar label="GPS compass" percent={gpsPercent} />
       </section>
+      <p className="liveLine">
+        Roll {formatDegrees(progress?.rollDegrees)}°, pitch {formatDegrees(progress?.pitchDegrees)}°, nose{" "}
+        {formatDegrees(progress?.yawDegrees)}°. These update while you turn the copter.
+      </p>
 
       <ol className="positionList">
         {SPIN_POSITIONS.map((step) => (
@@ -166,6 +183,11 @@ function CalibrateCompasses() {
           >
             <strong>{step.title}</strong>
             <span>{step.direction}</span>
+            <span>{poseTurnText(turnDegrees[step.position - 1], poseRecorded[step.position - 1])}</span>
+            <PercentBar
+              label="This turn"
+              percent={turnPercent(turnDegrees[step.position - 1], poseRecorded[step.position - 1])}
+            />
             {step.pictures ? <SpinPictures pictures={step.pictures} /> : null}
           </li>
         ))}
@@ -224,6 +246,23 @@ function PercentBar({ label, percent }) {
       <strong>{percent}%</strong>
     </div>
   )
+}
+
+function turnPercent(turnedDegrees, recorded) {
+  if (recorded) return 100
+  return clampPercent((Number(turnedDegrees) || 0) / 360 * 100)
+}
+
+function poseTurnText(turnedDegrees, recorded) {
+  if (recorded) return "Turn recorded."
+  const turned = Math.round(Number(turnedDegrees) || 0)
+  return `Turned ${turned} of 360 degrees.`
+}
+
+function formatDegrees(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return "—"
+  return number.toFixed(1)
 }
 
 function clampPercent(value) {

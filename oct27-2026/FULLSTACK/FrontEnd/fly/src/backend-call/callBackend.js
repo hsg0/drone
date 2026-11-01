@@ -1,4 +1,5 @@
 import axios from "axios"
+import { io } from "socket.io-client"
 
 const defaultHost = typeof window !== "undefined" && window.location.hostname ? window.location.hostname : "127.0.0.1"
 const configuredUrl = import.meta.env.VITE_BACKEND_URL
@@ -41,7 +42,11 @@ export function saveFlightLog(body) {
 }
 
 export function fly10FeetEastWestNorthSouthLand(signal) {
-  return postToBackend("/flights/fly10FeetEWNSLand", { confirm: "YES" }, signal)
+  return postToBackend("/flights/fly10FeetEWNSLand", {}, signal)
+}
+
+export function sendFly10FeetEastWestNorthSouthYes() {
+  return postToBackend("/flights/fly10FeetEWNSLand/yes", { confirm: "YES" })
 }
 
 export function clearFly10FeetEastWestNorthSouthLand() {
@@ -57,7 +62,11 @@ export function returnFly10FeetEastWestNorthSouthLandHome() {
 }
 
 export function fly10FeetTurnMission(signal) {
-  return postToBackend("/flights/fly10FeetE360W360N360S360Land", { confirm: "YES" }, signal)
+  return postToBackend("/flights/fly10FeetE360W360N360S360Land", {}, signal)
+}
+
+export function sendFly10FeetTurnMissionYes() {
+  return postToBackend("/flights/fly10FeetE360W360N360S360Land/yes", { confirm: "YES" })
 }
 
 export function calibrateCompasses() {
@@ -116,6 +125,18 @@ export function closeCameraConnection() {
   return postToBackend("/camera/webrtc/close", {})
 }
 
+export function watchEwnsTelemetry(onTelemetry, onConnection) {
+  const progressSocket = io(backendBaseUrl, { transports: ["websocket", "polling"] })
+  progressSocket.on("connect", () => {
+    onConnection("open")
+    progressSocket.emit("watch-ewns-telemetry")
+  })
+  progressSocket.on("disconnect", () => onConnection("closed"))
+  progressSocket.on("connect_error", () => onConnection("error"))
+  progressSocket.on("ewns-telemetry", (latestTelemetry) => onTelemetry(latestTelemetry))
+  return () => progressSocket.close()
+}
+
 export function watchFlightProgress(onProgress, onConnection) {
   const liveUrl = backendBaseUrl.replace(/^http/, "ws") + "/flights/live"
   const socket = new WebSocket(liveUrl)
@@ -133,17 +154,10 @@ export function watchFlightProgress(onProgress, onConnection) {
 }
 
 export function watchCalibrationProgress(onProgress, onConnection) {
-  const liveUrl = backendBaseUrl.replace(/^http/, "ws") + "/calibration/compasses/live"
-  const socket = new WebSocket(liveUrl)
-  socket.onopen = () => onConnection("open")
-  socket.onclose = () => onConnection("closed")
-  socket.onerror = () => onConnection("error")
-  socket.onmessage = (event) => {
-    try {
-      onProgress(JSON.parse(event.data))
-    } catch {
-      onConnection("error")
-    }
-  }
-  return () => socket.close()
+  const progressSocket = io(backendBaseUrl, { transports: ["websocket", "polling"] })
+  progressSocket.on("connect", () => onConnection("open"))
+  progressSocket.on("disconnect", () => onConnection("closed"))
+  progressSocket.on("connect_error", () => onConnection("error"))
+  progressSocket.on("calibration-progress", (latestProgress) => onProgress(latestProgress))
+  return () => progressSocket.close()
 }

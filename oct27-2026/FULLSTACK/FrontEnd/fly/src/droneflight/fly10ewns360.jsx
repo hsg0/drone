@@ -5,7 +5,9 @@ import {
   fly10FeetTurnMission,
   readFlightLogs,
   returnFly10FeetEastWestNorthSouthLandHome,
+  sendFly10FeetTurnMissionYes,
   stopFly10FeetEastWestNorthSouthLand,
+  watchEwnsTelemetry,
   watchFlightProgress,
 } from "../backend-call/callBackend.js"
 import { LiveFlightSteps } from "./liveFlightSteps.jsx"
@@ -43,7 +45,10 @@ function Fly10EastWestNorthSouthTurns() {
   const [flightIsRunning, setFlightIsRunning] = useState(false)
   const [liveProgress, setLiveProgress] = useState(null)
   const [liveConnection, setLiveConnection] = useState("connecting")
+  const [telemetry, setTelemetry] = useState(null)
+  const [telemetryConnection, setTelemetryConnection] = useState("connecting")
   const flyRequestRef = useRef(null)
+  const yesSentRef = useRef(false)
 
   useEffect(() => {
     let pageIsOpen = true
@@ -65,6 +70,20 @@ function Fly10EastWestNorthSouthTurns() {
   useEffect(() => {
     return watchFlightProgress(setLiveProgress, setLiveConnection)
   }, [])
+
+  useEffect(() => {
+    return watchEwnsTelemetry(setTelemetry, setTelemetryConnection)
+  }, [])
+
+  useEffect(() => {
+    if (!flightIsRunning || yesSentRef.current || !liveProgress?.satelliteFixReady) return
+    yesSentRef.current = true
+    setFlightReply("Satellite fix is in. Sending YES.")
+    sendFly10FeetTurnMissionYes().catch((error) => {
+      yesSentRef.current = false
+      setFlightReply(error?.message || "YES was not sent after the satellite fix.")
+    })
+  }, [flightIsRunning, liveProgress])
 
   const turnMissionIsRunning =
     flightIsRunning || (liveProgress?.running && liveProgress?.scriptName === "fly10FeetE360W360N360S360Land")
@@ -104,8 +123,9 @@ function Fly10EastWestNorthSouthTurns() {
   async function startFlight() {
     const controller = new AbortController()
     flyRequestRef.current = controller
+    yesSentRef.current = false
     setFlightIsRunning(true)
-    setFlightReply("Flight requested. Waiting for the copter to finish.")
+    setFlightReply("Connecting. YES is sent after the copter has a satellite fix.")
     try {
       const reply = await fly10FeetTurnMission(controller.signal)
       const outcome = reply?.outcome || "No outcome"
@@ -139,7 +159,7 @@ function Fly10EastWestNorthSouthTurns() {
           onClick={startFlight}
           disabled={turnMissionIsRunning}
         >
-          {turnMissionIsRunning ? "Flying..." : "Fly — sends YES"}
+          {turnMissionIsRunning ? "Flying..." : "Fly — YES after satellite fix"}
         </button>
         <button
           className="brightButton homeButton"
@@ -158,6 +178,16 @@ function Fly10EastWestNorthSouthTurns() {
           Stop and land
         </button>
       </div>
+      <section className="planFacts">
+        <h2>Telemetry</h2>
+        <p className="liveLine">Socket.io: {telemetryConnection}</p>
+        <p className="liveLine">Updated: {telemetry?.updatedAt || "waiting"}</p>
+        <p>Latitude: {formatCoordinate(telemetry?.latitude)}</p>
+        <p>Longitude: {formatCoordinate(telemetry?.longitude)}</p>
+        <p>Satellites: {formatCount(telemetry?.satelliteCount)}{telemetry?.fixType >= 3 ? ", 3D fix" : ""}</p>
+        <p>Board compass direction: {formatCompassDirection(telemetry?.boardCompassDegrees)}</p>
+        <p>GPS compass direction: {formatCompassDirection(telemetry?.gpsCompassDegrees)}</p>
+      </section>
       {flightReply ? <p>{flightReply}</p> : null}
       <LiveFlightSteps progress={liveProgress} connection={liveConnection} />
       <ol className="positionList">
@@ -181,6 +211,29 @@ function Fly10EastWestNorthSouthTurns() {
       </Link>
     </main>
   )
+}
+
+function formatCoordinate(value) {
+  if (value == null) return "waiting"
+  const number = Number(value)
+  if (!Number.isFinite(number) || number === 0) return "waiting"
+  return number.toFixed(6)
+}
+
+function formatCount(value) {
+  if (value == null) return "waiting"
+  const number = Number(value)
+  if (!Number.isFinite(number)) return "waiting"
+  return String(number)
+}
+
+function formatCompassDirection(value) {
+  if (value == null) return "waiting"
+  const degrees = Number(value)
+  if (!Number.isFinite(degrees)) return "waiting"
+  const names = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"]
+  const name = names[Math.round(degrees / 45) % 8]
+  return `${degrees.toFixed(1)}° ${name}`
 }
 
 export default Fly10EastWestNorthSouthTurns

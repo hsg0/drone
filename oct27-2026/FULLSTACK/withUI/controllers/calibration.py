@@ -21,7 +21,7 @@ PIXHAWK_BAUD = 57600
 GROUND_STATION_SYSTEM_ID = 255
 HEARTBEAT_TIMEOUT_SECONDS = 15.0
 PARAMETER_TIMEOUT_SECONDS = 5.0
-COMPASS_CALIBRATION_TIMEOUT_SECONDS = 240.0
+COMPASS_CALIBRATION_TIMEOUT_SECONDS = 300.0
 DRAIN_OLD_PACKETS_TIMEOUT_SECONDS = 1.0
 REBOOT_WAIT_SECONDS = 12.0
 MESSAGE_INTERVAL_MICROSECONDS = 100000
@@ -59,6 +59,16 @@ SPIN_POSITIONS = (
     (67, "POSITION 5 OF 6: Drone's right side toward the ground. Right is your right when you stand behind the tail and look along the nose. Keep the right side down. Look down at the left side and turn clockwise one full 360."),
     (84, "POSITION 6 OF 6: Upside down. Belly and legs point at the sky. Keep it upside down. Look down at the belly and turn clockwise one full 360 until both percentages reach 100."),
 )
+
+# A pose is recognized from roll and pitch. The turn is counted from the body spin
+# rate, because earth yaw stops meaning "one circle" once the nose is up or down.
+LEVEL_POSE_LIMIT_DEGREES = 35
+NOSE_POSE_DEGREES = 50
+SIDE_POSE_DEGREES = 50
+FULL_TURN_DEGREES = 330
+MINIMUM_SPIN_RATE_DEGREES_PER_SECOND = 8
+MAXIMUM_TURN_SAMPLE_DEGREES = 40
+MAXIMUM_ATTITUDE_GAP_SECONDS = 0.5
 
 calibrationIsRunning = False
 calibrationGuard = asyncio.Lock()
@@ -172,6 +182,11 @@ def readCalibrationProgress():
             "secondaryPercent": current.get("secondaryPercent", 0),
             "position": current.get("position", 0),
             "status": current.get("status"),
+            "rollDegrees": current.get("rollDegrees"),
+            "pitchDegrees": current.get("pitchDegrees"),
+            "yawDegrees": current.get("yawDegrees"),
+            "turnDegrees": list(current.get("turnDegrees") or [0, 0, 0, 0, 0, 0]),
+            "poseRecorded": list(current.get("poseRecorded") or [False, False, False, False, False, False]),
             "lines": list(current.get("lines") or []),
             "compassReports": list(current.get("compassReports") or []),
             "stopReason": current.get("stopReason"),
@@ -192,6 +207,19 @@ def readCalibrationProgress():
         }
 
 
+lastMovementPublishAt = 0.0
+
+
+def publishCalibrationMovement(result):
+    """Push roll, pitch, and nose direction without a new log line. About four times a second."""
+    global lastMovementPublishAt
+    now = time.monotonic()
+    if now - lastMovementPublishAt < 0.25:
+        return
+    lastMovementPublishAt = now
+    publishCalibrationProgress(result)
+
+
 def publishCalibrationProgress(result):
     global calibrationProgress
     progress = result.get("progress") or {}
@@ -204,6 +232,11 @@ def publishCalibrationProgress(result):
         "secondaryPercent": progress.get("secondaryPercent", 0),
         "position": progress.get("position", 0),
         "status": progress.get("status"),
+        "rollDegrees": progress.get("rollDegrees"),
+        "pitchDegrees": progress.get("pitchDegrees"),
+        "yawDegrees": progress.get("yawDegrees"),
+        "turnDegrees": list(progress.get("turnDegrees") or [0, 0, 0, 0, 0, 0]),
+        "poseRecorded": list(progress.get("poseRecorded") or [False, False, False, False, False, False]),
         "lines": lines[-8:],
         "compassReports": list(result.get("compassReports") or []),
         "stopReason": None if showCalibrationAsRunning else result.get("stopReason"),
@@ -220,6 +253,15 @@ def sendProgressToSockets(snapshot):
         except Exception as error:
             print(f"Calibration progress was not sent: {error}")
 
+    def pushCalibrationSnapshot(progressSnapshot=snapshot):
+        from controllers.flightPlan import perimeterSocket
+        asyncio.create_task(perimeterSocket.emit("calibration-progress", progressSnapshot))
+
+    try:
+        progressLoop.call_soon_threadsafe(pushCalibrationSnapshot)
+    except Exception as error:
+        print(f"Calibration progress was not sent on socket.io: {error}")
+
 
 def runCalibrateCompasses():
     global showCalibrationAsRunning
@@ -233,7 +275,13 @@ def runCalibrateCompasses():
         "stopReason": None,
         "lines": [],
         "compassReports": [],
-        "progress": {"primaryPercent": 0, "secondaryPercent": 0, "position": 0},
+        "progress": {
+            "primaryPercent": 0,
+            "secondaryPercent": 0,
+            "position": 0,
+            "turnDegrees": [0, 0, 0, 0, 0, 0],
+            "poseRecorded": [False, False, False, False, False, False],
+        },
     }
     connection = None
     calibrationStarted = False
@@ -241,6 +289,8 @@ def runCalibrateCompasses():
     try:
         if not os.path.exists(PIXHAWK_PORT):
             raise RuntimeError(f"{PIXHAWK_PORT} is missing. Run the backend on the Raspberry Pi.")
+        from controllers.flightController import releaseEwnsPageTelemetry
+        releaseEwnsPageTelemetry()
         from pymavlink import mavutil as middleMan
 
         writeCalibrationLine(result, "FAST COMPASS RECALIBRATION (INTERNAL = PRIMARY, GPS = SECONDARY)")
@@ -270,26 +320,39 @@ def runCalibrateCompasses():
         calibrationStarted = True
         startMagCalibration(connection, middleMan)
         reports = waitForMagCalibration(connection, middleMan, result)
-        acceptMagCalibration(connection, middleMan)
         result["compassReports"] = reports
 
         primarySucceeded = reportSucceeded(reports, 0, middleMan)
         secondarySucceeded = reportSucceeded(reports, 1, middleMan)
-        if primarySucceeded and secondarySucceeded:
-            result["outcome"] = "SUCCESS"
-            writeCalibrationLine(result, "Both compasses calibrated and saved.")
-        elif primarySucceeded:
-            result["outcome"] = "PARTIAL"
-            writeCalibrationLine(result, "Primary compass saved. Secondary compass did not report success.")
+        if primarySucceeded:
+            acceptMagCalibration(connection, middleMan)
+            if secondarySucceeded:
+                result["outcome"] = "SUCCESS"
+                writeCalibrationLine(result, "Both compasses calibrated and saved.")
+            else:
+                result["outcome"] = "PARTIAL"
+                writeCalibrationLine(result, "Primary compass saved. Secondary compass did not report success.")
+            writeCalibrationLine(result, "Rebooting so the EKF loads the compass calibration.")
+            connection = rebootPixhawk(connection, middleMan)
+            result["afterCalibration"] = readCompassSnapshot(connection)
+            writeCalibrationLine(result, "Pixhawk rebooted. Final compass snapshot recorded.")
         else:
+            cancelMagCalibration(connection, middleMan)
+            progress = result.get("progress") or {}
             result["outcome"] = "FAILED"
-            result["stopReason"] = "The Pixhawk did not report success for the primary compass."
+            if not reports:
+                result["stopReason"] = (
+                    f"The compass calibration was still running at board {progress.get('primaryPercent', 0)}% "
+                    f"and GPS {progress.get('secondaryPercent', 0)}% when the "
+                    f"{int(COMPASS_CALIBRATION_TIMEOUT_SECONDS / 60)} minute wait ended. "
+                    "The Pixhawk had not finished, so the calibration was not saved."
+                )
+            else:
+                reportText = ", ".join(
+                    f"compass {report.get('compassId')} {report.get('status')}" for report in reports
+                )
+                result["stopReason"] = f"The Pixhawk did not accept the primary compass. {reportText}."
             writeCalibrationLine(result, result["stopReason"])
-
-        writeCalibrationLine(result, "Rebooting so the EKF loads the compass calibration.")
-        connection = rebootPixhawk(connection, middleMan)
-        result["afterCalibration"] = readCompassSnapshot(connection)
-        writeCalibrationLine(result, "Pixhawk rebooted. Final compass snapshot recorded.")
     except Exception as error:
         result["outcome"] = "FAILED"
         result["stopReason"] = str(error)
@@ -529,7 +592,7 @@ def waitForMagCalibration(connection, middleMan, result):
     startedAtSeconds = time.monotonic()
     while time.monotonic() - startedAtSeconds < COMPASS_CALIBRATION_TIMEOUT_SECONDS:
         message = connection.recv_match(
-            type=["MAG_CAL_PROGRESS", "MAG_CAL_REPORT", "STATUSTEXT"],
+            type=["MAG_CAL_PROGRESS", "MAG_CAL_REPORT", "STATUSTEXT", "ATTITUDE"],
             blocking=True,
             timeout=0.5,
         )
@@ -551,10 +614,12 @@ def waitForMagCalibration(connection, middleMan, result):
                     lastPromptedStage = stageNumber
                     writeCalibrationLine(result, prompt)
             statusName = statusNames.get(message.cal_status, f"STATUS {message.cal_status}")
+            existingProgress = result.get("progress") or {}
             result["progress"] = {
+                **existingProgress,
                 "primaryPercent": progressByCompass.get(0, 0),
                 "secondaryPercent": progressByCompass.get(1, 0),
-                "position": lastPromptedStage,
+                "position": existingProgress.get("position") or lastPromptedStage,
                 "status": statusName,
             }
             progressText = (
@@ -564,6 +629,11 @@ def waitForMagCalibration(connection, middleMan, result):
             if progressText != lastProgressText:
                 writeCalibrationLine(result, progressText)
                 lastProgressText = progressText
+            else:
+                publishCalibrationMovement(result)
+        elif messageType == "ATTITUDE":
+            rememberPoseTurn(result, message)
+            publishCalibrationMovement(result)
         elif messageType == "MAG_CAL_REPORT":
             compassId = int(message.compass_id)
             if compassId not in (0, 1):
@@ -582,6 +652,145 @@ def waitForMagCalibration(connection, middleMan, result):
             if 0 in reportsByCompass and 1 in reportsByCompass:
                 break
     return [reportsByCompass[compassId] for compassId in (0, 1) if compassId in reportsByCompass]
+
+
+def poseFromRollAndPitch(rollDegrees, pitchDegrees):
+    """Return 1 through 6 for the calibration pose, or 0 when the copter is between poses."""
+    # Body Z points at the ground when upright and at the sky when upside down.
+    # Pitch near 180 is upside down, and it must be checked before the nose-up test.
+    roll = math.radians(rollDegrees)
+    pitch = math.radians(pitchDegrees)
+    if math.cos(roll) * math.cos(pitch) <= -0.5:
+        return 6
+    if abs(pitchDegrees) <= LEVEL_POSE_LIMIT_DEGREES and abs(rollDegrees) <= LEVEL_POSE_LIMIT_DEGREES:
+        return 1
+    if pitchDegrees <= -NOSE_POSE_DEGREES and abs(rollDegrees) <= 50:
+        return 2
+    if pitchDegrees >= NOSE_POSE_DEGREES and abs(rollDegrees) <= 50:
+        return 3
+    if rollDegrees <= -SIDE_POSE_DEGREES and abs(pitchDegrees) <= 45:
+        return 4
+    if rollDegrees >= SIDE_POSE_DEGREES and abs(pitchDegrees) <= 45:
+        return 5
+    return 0
+
+
+def eulerMatrix(rollDegrees, pitchDegrees, yawDegrees):
+    roll = math.radians(rollDegrees)
+    pitch = math.radians(pitchDegrees)
+    yaw = math.radians(yawDegrees)
+    cosRoll, sinRoll = math.cos(roll), math.sin(roll)
+    cosPitch, sinPitch = math.cos(pitch), math.sin(pitch)
+    cosYaw, sinYaw = math.cos(yaw), math.sin(yaw)
+    return (
+        (cosYaw * cosPitch, cosYaw * sinPitch * sinRoll - sinYaw * cosRoll, cosYaw * sinPitch * cosRoll + sinYaw * sinRoll),
+        (sinYaw * cosPitch, sinYaw * sinPitch * sinRoll + cosYaw * cosRoll, sinYaw * sinPitch * cosRoll - cosYaw * sinRoll),
+        (-sinPitch, cosPitch * sinRoll, cosPitch * cosRoll),
+    )
+
+
+def rotationAngleDegrees(previousRoll, previousPitch, previousYaw, rollDegrees, pitchDegrees, yawDegrees):
+    """Smallest turn between two attitudes. This still counts when nose direction is frozen upside down."""
+    if previousRoll is None or previousPitch is None or previousYaw is None:
+        return 0.0
+    previous = eulerMatrix(previousRoll, previousPitch, previousYaw)
+    current = eulerMatrix(rollDegrees, pitchDegrees, yawDegrees)
+    trace = 0.0
+    for row in range(3):
+        for column in range(3):
+            trace += previous[column][row] * current[column][row]
+    cosine = max(-1.0, min(1.0, (trace - 1.0) / 2.0))
+    return math.degrees(math.acos(cosine))
+
+
+def wrappedAngleDeltaDegrees(latestDegrees, previousDegrees):
+    if previousDegrees is None:
+        return 0.0
+    return abs((latestDegrees - previousDegrees + 180.0) % 360.0 - 180.0)
+
+
+def addedTurnDegrees(pose, message, progress, gapSeconds, rollDegrees, pitchDegrees, yawDegrees):
+    """How far this sample turned the copter in the current pose.
+
+    The body-rate fields often stay near zero when the copter is turned by hand.
+    The change in nose direction is what shows the circle.
+    """
+    yawDelta = wrappedAngleDeltaDegrees(yawDegrees, progress.get("lastYawDegrees"))
+    rollDelta = wrappedAngleDeltaDegrees(rollDegrees, progress.get("lastRollDegrees"))
+    pitchDelta = wrappedAngleDeltaDegrees(pitchDegrees, progress.get("lastPitchDegrees"))
+    turned = rotationAngleDegrees(
+        progress.get("lastRollDegrees"),
+        progress.get("lastPitchDegrees"),
+        progress.get("lastYawDegrees"),
+        rollDegrees,
+        pitchDegrees,
+        yawDegrees,
+    )
+    if pose in (1, 6):
+        angleDelta = max(yawDelta, turned)
+        rateDelta = abs(math.degrees(float(message.yawspeed))) * gapSeconds
+    elif pose in (2, 3):
+        angleDelta = max(rollDelta, yawDelta, turned)
+        rateDelta = abs(math.degrees(float(message.rollspeed))) * gapSeconds
+    elif pose in (4, 5):
+        angleDelta = max(yawDelta, pitchDelta, turned)
+        rateDelta = abs(math.degrees(float(message.pitchspeed))) * gapSeconds
+    else:
+        return 0.0
+    if angleDelta < 0.8:
+        angleDelta = 0.0
+    return min(MAXIMUM_TURN_SAMPLE_DEGREES, max(angleDelta, rateDelta))
+
+
+def highlightedPose(pose, poseRecorded):
+    if pose and not poseRecorded[pose - 1]:
+        return pose
+    for index, recorded in enumerate(poseRecorded):
+        if not recorded:
+            return index + 1
+    return pose or 6
+
+
+def rememberPoseTurn(result, message):
+    progress = dict(result.get("progress") or {})
+    rollDegrees = math.degrees(float(message.roll))
+    pitchDegrees = math.degrees(float(message.pitch))
+    yawDegrees = math.degrees(float(message.yaw))
+    pose = poseFromRollAndPitch(rollDegrees, pitchDegrees)
+    turnDegrees = list(progress.get("turnDegrees") or [0, 0, 0, 0, 0, 0])
+    poseRecorded = list(progress.get("poseRecorded") or [False, False, False, False, False, False])
+    now = time.monotonic()
+    previousAt = progress.get("lastAttitudeAt")
+    gapSeconds = 0.0 if previousAt is None else max(0.0, now - previousAt)
+    if gapSeconds > MAXIMUM_ATTITUDE_GAP_SECONDS:
+        gapSeconds = 0.0
+    justRecorded = False
+    if pose and not poseRecorded[pose - 1]:
+        addedDegrees = addedTurnDegrees(
+            pose, message, progress, gapSeconds, rollDegrees, pitchDegrees, yawDegrees
+        )
+        if addedDegrees > 0:
+            turnDegrees[pose - 1] = min(360.0, turnDegrees[pose - 1] + addedDegrees)
+            if turnDegrees[pose - 1] >= FULL_TURN_DEGREES:
+                poseRecorded[pose - 1] = True
+                turnDegrees[pose - 1] = 360.0
+                justRecorded = True
+    progress.update({
+        "rollDegrees": round(rollDegrees, 1),
+        "pitchDegrees": round(pitchDegrees, 1),
+        "yawDegrees": round(yawDegrees, 1),
+        "lastRollDegrees": rollDegrees,
+        "lastPitchDegrees": pitchDegrees,
+        "lastYawDegrees": yawDegrees,
+        "detectedPosition": pose,
+        "position": highlightedPose(pose, poseRecorded),
+        "turnDegrees": [round(degrees, 0) for degrees in turnDegrees],
+        "poseRecorded": poseRecorded,
+        "lastAttitudeAt": now,
+    })
+    result["progress"] = progress
+    if justRecorded:
+        writeCalibrationLine(result, f"POSITION {pose} OF 6 turn recorded. Go to the next pose.")
 
 
 def compassReport(message, statusNames):
