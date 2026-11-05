@@ -78,10 +78,10 @@ function Fly10EastWestNorthSouthTurns() {
   useEffect(() => {
     if (!flightIsRunning || yesSentRef.current || !liveProgress?.satelliteFixReady) return
     yesSentRef.current = true
-    setFlightReply("Satellite fix is in. Sending YES.")
+    setFlightReply("Sending YES.")
     sendFly10FeetTurnMissionYes().catch((error) => {
       yesSentRef.current = false
-      setFlightReply(error?.message || "YES was not sent after the satellite fix.")
+      setFlightReply(error?.message || "YES was not sent.")
     })
   }, [flightIsRunning, liveProgress])
 
@@ -125,7 +125,7 @@ function Fly10EastWestNorthSouthTurns() {
     flyRequestRef.current = controller
     yesSentRef.current = false
     setFlightIsRunning(true)
-    setFlightReply("Connecting. YES is sent after the copter has a satellite fix.")
+    setFlightReply("Connecting. YES is sent, then the copter arms.")
     try {
       const reply = await fly10FeetTurnMission(controller.signal)
       const outcome = reply?.outcome || "No outcome"
@@ -159,7 +159,7 @@ function Fly10EastWestNorthSouthTurns() {
           onClick={startFlight}
           disabled={turnMissionIsRunning}
         >
-          {turnMissionIsRunning ? "Flying..." : "Fly — YES after satellite fix"}
+          {turnMissionIsRunning ? "Flying..." : "Fly — sends YES"}
         </button>
         <button
           className="brightButton homeButton"

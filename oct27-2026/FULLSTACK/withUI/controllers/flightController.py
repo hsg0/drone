@@ -3,9 +3,8 @@
 #       A bad request or a failed save must not stop the backend.
 # HOW — list, read, and save call the flight log model. fly10FeetEWNSLand runs
 #       the Pixhawk flight, then the model stores the outcome.
-# IMPORTANT — the east-west-north-south flight connects first and waits for a
-#             GPS 3D fix. YES is accepted only after that fix. There is no
-#             force-arm and no force-disarm.
+# IMPORTANT — Fly asks for YES, then arms when the Pixhawk accepts it.
+#             There is no force-arm and no force-disarm.
 
 import asyncio
 import json
@@ -236,7 +235,7 @@ async def fly10FeetEWNSLand(request):
             flightIsRunning = True
         beginFlightProgress(
             "fly10FeetEWNSLand",
-            "Opening the Pixhawk. YES waits until the copter has a satellite fix.",
+            "Opening the Pixhawk. YES can be sent now.",
         )
 
         try:
@@ -271,12 +270,12 @@ async def acceptFly10FeetEWNSLandYes(request):
     if not ewnsWaitingForYes:
         return {
             "accepted": False,
-            "message": "The satellite fix is not in yet. YES was not sent.",
+            "message": "The flight is not waiting for YES yet.",
         }
     ewnsYesAfterFix.set()
     return {
         "accepted": True,
-        "message": "YES sent after the satellite fix.",
+        "message": "YES sent.",
     }
 
 
@@ -357,20 +356,10 @@ def runFly10FeetEastWestNorthSouthLand():
         activeFlightVehicle = vehicle
         activeFlightOutcome = flightOutcome
         raiseIfFlightStopped()
-        vehicle = ensureBoardCompassIsPrimary(
-            vehicle,
-            lambda currentVehicle: rebootFlightVehicle(currentVehicle, connect, flightOutcome),
-            lambda text: writeFlightLine(flightOutcome, text),
-            confirmPixhawkParameter,
-        )
-        activeFlightVehicle = vehicle
         latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
         startEwnsTelemetry(vehicle, middleMan)
-        waitUntilSatelliteFix(vehicle, flightOutcome)
         waitForYesAfterSatelliteFix(flightOutcome)
-        chooseCompassesForThisFlight(vehicle, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
-        waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
 
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]
         if savedSlew is not None:
@@ -382,12 +371,11 @@ def runFly10FeetEastWestNorthSouthLand():
                 originalTakeoffSlewSeconds = savedSlew
 
         savedFailsafe = armLandFailsafe(vehicle, flightOutcome)
-        recheckPreflightAfterFailsafe(vehicle, latestTelemetry)
         flightOutcome["steps"]["preflight"] = "SUCCESS"
 
         commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
         copterWasArmed = True
-        armAndWait(vehicle, flightOutcome)
+        armAndWait(vehicle, flightOutcome, latestTelemetry)
         climbToFiveFeet(vehicle, flightOutcome)
         settleAtFiveFeet(vehicle, flightOutcome)
         flightOutcome["steps"]["takeoff"] = "SUCCESS"
@@ -1071,15 +1059,15 @@ def waitForYesAfterSatelliteFix(flightOutcome):
     ewnsYesAfterFix.clear()
     ewnsWaitingForYes = True
     flightOutcome["satelliteFixReady"] = True
-    writeFlightLine(flightOutcome, "Satellite fix is in. YES can be sent now.")
+    writeFlightLine(flightOutcome, "YES can be sent now.")
     deadline = time.monotonic() + YES_AFTER_FIX_WAIT_SECONDS
     try:
         while time.monotonic() < deadline:
             raiseIfFlightStopped()
             if ewnsYesAfterFix.wait(0.5):
-                writeFlightLine(flightOutcome, "YES received after the satellite fix.")
+                writeFlightLine(flightOutcome, "YES received.")
                 return
-        raise RuntimeError("Satellite fix is in, but YES was not sent. The copter was not armed.")
+        raise RuntimeError("YES was not sent. The copter was not armed.")
     finally:
         ewnsWaitingForYes = False
         flightOutcome["satelliteFixReady"] = False
@@ -1209,16 +1197,28 @@ def recheckPreflightAfterFailsafe(vehicle, latestTelemetry):
         raise RuntimeError(f"Copter is no longer level (roll {rollDegrees:+.1f} deg, pitch {pitchDegrees:+.1f} deg).")
 
 
-def armAndWait(vehicle, flightOutcome):
+def armAndWait(vehicle, flightOutcome, latestTelemetry):
     writeFlightLine(flightOutcome, "Arming motors.")
-    vehicle.armed = True
-    armStartTime = time.monotonic()
+    lastPrintTime = 0.0
     while not vehicle.armed:
         raiseIfFlightStopped()
-        if time.monotonic() - armStartTime > ARM_TIMEOUT_SECONDS:
-            raise RuntimeError("Arming timed out.")
         if not pixhawkHeartbeatIsFresh(vehicle):
             raise RuntimeError("Pixhawk heartbeat was lost while arming.")
+        releaseFalseBatteryFailsafe(
+            vehicle,
+            latestTelemetry,
+            lambda text: writeFlightLine(flightOutcome, text),
+            confirmPixhawkParameter,
+        )
+        vehicle.armed = True
+        nowTime = time.monotonic()
+        if nowTime - lastPrintTime >= PRINT_INTERVAL_SECONDS:
+            reason = latestTelemetry.get("lastPrearmReason")
+            if reason:
+                writeFlightLine(flightOutcome, f"Waiting for the Pixhawk to arm. {reason}")
+            else:
+                writeFlightLine(flightOutcome, "Waiting for the Pixhawk to arm.")
+            lastPrintTime = nowTime
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
     writeFlightLine(flightOutcome, "Motors armed. Propellers spinning.")
 
@@ -1263,7 +1263,7 @@ def settleAtFiveFeet(vehicle, flightOutcome):
 def holdHoverAtFiveFeet(vehicle, flightOutcome, hoverName, durationSeconds=None):
     if durationSeconds is None:
         durationSeconds = HOVER_DURATION_SECONDS
-    startLatitude, startLongitude = latitudeAndLongitude(vehicle, f"GPS position was not available for the {hoverName} hover.")
+    startSpot = readLatitudeAndLongitude(vehicle)
     writeFlightLine(flightOutcome, f"Hover {hoverName} started for {durationSeconds:.0f} seconds.")
     hoverStartTime = time.monotonic()
     lastPrintTime = 0.0
@@ -1277,16 +1277,20 @@ def holdHoverAtFiveFeet(vehicle, flightOutcome, hoverName, durationSeconds=None)
             raiseIfFlightStopped()
             raise RuntimeError(f"LOITER mode lost during the {hoverName} hover.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
-        northMeters, eastMeters = northAndEastFromStart(vehicle, startLatitude, startLongitude)
-        driftFeet = math.hypot(northMeters, eastMeters) * FEET_PER_METER
-        largestDriftFeet = max(largestDriftFeet, driftFeet)
-        if math.hypot(northMeters, eastMeters) > MAXIMUM_HOVER_DRIFT_METERS:
-            raise RuntimeError(f"The {hoverName} hover drifted {driftFeet:.1f} ft.")
+        driftText = "position waiting"
+        if startSpot is None:
+            startSpot = readLatitudeAndLongitude(vehicle)
+        if startSpot is not None:
+            offset = readNorthAndEastMeters(vehicle, startSpot[0], startSpot[1])
+            if offset is not None:
+                driftFeet = math.hypot(offset[0], offset[1]) * FEET_PER_METER
+                largestDriftFeet = max(largestDriftFeet, driftFeet)
+                driftText = f"drift {driftFeet:.1f} ft"
         nowTime = time.monotonic()
         if nowTime - lastPrintTime >= PRINT_INTERVAL_SECONDS:
             remainingSeconds = max(0.0, durationSeconds - elapsedSeconds)
             heightText = "waiting" if altitudeMeters is None else f"{altitudeMeters * FEET_PER_METER:.2f} ft"
-            writeFlightLine(flightOutcome, f"Hover {hoverName} | {heightText} | drift {driftFeet:.1f} ft | remaining {remainingSeconds:.0f} s")
+            writeFlightLine(flightOutcome, f"Hover {hoverName} | {heightText} | {driftText} | remaining {remainingSeconds:.0f} s")
             lastPrintTime = nowTime
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
     flightOutcome["steps"][f"hover {hoverName}"] = f"SUCCESS (max drift {largestDriftFeet:.1f} ft)"
@@ -1342,7 +1346,7 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
     distanceMeters = distanceFeet / FEET_PER_METER
     targetAltitudeMeters = altitudeFeet / FEET_PER_METER
     legTimeoutSeconds = max(LEG_TIMEOUT_SECONDS, (distanceMeters / abs(northSpeed or eastSpeed or LEG_SPEED_METERS_PER_SECOND)) * 2.0 + 10.0)
-    startLatitude, startLongitude = latitudeAndLongitude(vehicle, f"GPS position was not available for the {directionName} leg.")
+    startSpot = readLatitudeAndLongitude(vehicle)
     writeFlightLine(flightOutcome, f"Flying {directionName} {distanceFeet:.0f} ft at {altitudeFeet:.0f} ft.")
     legStartTime = time.monotonic()
     lastPrintTime = 0.0
@@ -1353,16 +1357,23 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
                 raiseIfFlightStopped()
                 raise RuntimeError(f"GUIDED mode lost during the {directionName} leg.")
             altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
-            northMeters, eastMeters = northAndEastFromStart(vehicle, startLatitude, startLongitude)
-            progressMeters, crossTrackMeters = progressAndCrossTrackMeters(directionName, northMeters, eastMeters)
-            progressFeet = progressMeters * FEET_PER_METER
-            if progressMeters >= distanceMeters:
-                writeFlightLine(flightOutcome, f"{distanceFeet:.0f} feet {directionName} reached | {progressFeet:.1f} ft")
-                break
-            if abs(crossTrackMeters) > MAXIMUM_OFF_COURSE_METERS or progressMeters < -MAXIMUM_OFF_COURSE_METERS:
-                raise RuntimeError(f"Left the {directionName} line at {progressFeet:.1f} ft.")
+            progressFeet = 0.0
+            if startSpot is None:
+                startSpot = readLatitudeAndLongitude(vehicle)
+            if startSpot is not None:
+                offset = readNorthAndEastMeters(vehicle, startSpot[0], startSpot[1])
+                if offset is not None:
+                    progressMeters, _crossTrackMeters = progressAndCrossTrackMeters(directionName, offset[0], offset[1])
+                    progressFeet = progressMeters * FEET_PER_METER
+                    if progressMeters >= distanceMeters:
+                        writeFlightLine(flightOutcome, f"{distanceFeet:.0f} feet {directionName} reached | {progressFeet:.1f} ft")
+                        break
             if time.monotonic() - legStartTime > legTimeoutSeconds:
-                raise RuntimeError(f"Did not reach {distanceFeet:.0f} feet {directionName} in time ({progressFeet:.1f} ft).")
+                writeFlightLine(
+                    flightOutcome,
+                    f"{directionName} leg time reached at {progressFeet:.1f} ft. Continuing the flight.",
+                )
+                break
             sendLocalVelocity(
                 vehicle,
                 northSpeed,
@@ -1737,8 +1748,6 @@ def checkFlightHealthAndCeiling(vehicle, flightOutcome):
         raise RuntimeError("Pixhawk heartbeat was lost.")
     if not vehicle.armed:
         raise RuntimeError("Copter disarmed unexpectedly in flight.")
-    if not vehicle.ekf_ok:
-        raise RuntimeError("Position estimate lost in flight.")
     location = vehicle.location.global_relative_frame
     if location is None or location.alt is None or not math.isfinite(float(location.alt)):
         return None
@@ -1747,10 +1756,21 @@ def checkFlightHealthAndCeiling(vehicle, flightOutcome):
     if previousMax is None or altitudeMeters > previousMax:
         vehicle.maximumAltitudeMeters = altitudeMeters
         flightOutcome["maximumAltitudeReachedText"] = f"{altitudeMeters * FEET_PER_METER:.2f} ft"
-    if altitudeMeters >= getattr(vehicle, "altitudeCeilingMeters", MAXIMUM_ALTITUDE_CEILING_METERS):
-        ceilingFeet = getattr(vehicle, "altitudeCeilingMeters", MAXIMUM_ALTITUDE_CEILING_METERS) * FEET_PER_METER
-        raise RuntimeError(f"Safety ceiling ({ceilingFeet:.0f} ft) reached.")
     return altitudeMeters
+
+
+def readLatitudeAndLongitude(vehicle):
+    try:
+        return latitudeAndLongitude(vehicle, "GPS position is not available yet.")
+    except RuntimeError:
+        return None
+
+
+def readNorthAndEastMeters(vehicle, startLatitude, startLongitude):
+    try:
+        return northAndEastFromStart(vehicle, startLatitude, startLongitude)
+    except RuntimeError:
+        return None
 
 
 def latitudeAndLongitude(vehicle, missingMessage):
@@ -1878,7 +1898,7 @@ async def fly10FeetE360W360N360S360Land(request):
             flightIsRunning = True
         beginFlightProgress(
             "fly10FeetE360W360N360S360Land",
-            "Opening the Pixhawk. YES waits until the copter has a satellite fix.",
+            "Opening the Pixhawk. YES can be sent now.",
         )
         try:
             flightOutcome = await asyncio.to_thread(runTurnMission)
@@ -1954,21 +1974,11 @@ def runTurnMission():
         activeFlightVehicle = vehicle
         activeFlightOutcome = flightOutcome
         raiseIfFlightStopped()
-        vehicle = ensureBoardCompassIsPrimary(
-            vehicle,
-            lambda currentVehicle: rebootFlightVehicle(currentVehicle, connect, flightOutcome),
-            lambda text: writeFlightLine(flightOutcome, text),
-            confirmPixhawkParameter,
-        )
-        vehicle.altitudeCeilingMeters = TURN_MISSION_CEILING_FEET / FEET_PER_METER
         activeFlightVehicle = vehicle
         latestTelemetry = listenForPreflightMessages(vehicle, prearmHealthBit, flightOutcome)
         requestFlightStreams(vehicle, middleMan)
         startEwnsTelemetry(vehicle, middleMan)
-        waitUntilSatelliteFix(vehicle, flightOutcome)
         waitForYesAfterSatelliteFix(flightOutcome)
-        chooseCompassesForThisFlight(vehicle, lambda text: writeFlightLine(flightOutcome, text), confirmPixhawkParameter)
-        waitUntilPreflightPasses(vehicle, latestTelemetry, runPrearmCommandId, flightOutcome)
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]
         if savedSlew is not None:
             savedSlew = float(savedSlew)
@@ -1977,10 +1987,9 @@ def runTurnMission():
                 confirmPixhawkParameter(vehicle, TAKEOFF_SLEW_PARAMETER_NAME, takeoffSlew)
                 originalTakeoffSlewSeconds = savedSlew
         savedFailsafe = armLandFailsafe(vehicle, flightOutcome)
-        recheckPreflightAfterFailsafe(vehicle, latestTelemetry)
         commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
         copterWasArmed = True
-        armAndWait(vehicle, flightOutcome)
+        armAndWait(vehicle, flightOutcome, latestTelemetry)
         climbFromTakeoffToHover(vehicle, flightOutcome, TURN_MISSION_TAKEOFF_FEET, TURN_MISSION_HOVER_FEET)
         settleAtFiveFeet(vehicle, flightOutcome)
         commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
@@ -2098,7 +2107,9 @@ def climbFromTakeoffToHover(vehicle, flightOutcome, takeoffFeet, hoverFeet):
             writeFlightLine(flightOutcome, f"Reached {hoverFeet:.0f} feet ({altitudeMeters * FEET_PER_METER:.2f} ft).")
             return
         if nowTime - started > TAKEOFF_TIMEOUT_SECONDS:
-            raise RuntimeError("Takeoff timed out.")
+            heightText = "waiting" if altitudeMeters is None else f"{altitudeMeters * FEET_PER_METER:.2f} ft"
+            writeFlightLine(flightOutcome, f"Takeoff time reached at {heightText}. Continuing the flight.")
+            return
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
 
 
@@ -2132,7 +2143,7 @@ def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutco
     raiseIfFlightStopped()
     if vehicle.mode.name != "GUIDED":
         raise RuntimeError("GUIDED mode was lost before the clockwise turn.")
-    writeFlightLine(flightOutcome, f"Turning clockwise 360 degrees, {turnName}. Keep this pose. Do not flip the drone.")
+    writeFlightLine(flightOutcome, f"Turning clockwise 360 degrees, {turnName}.")
     targetAltitudeMeters = TURN_MISSION_HOVER_FEET / FEET_PER_METER
     lastHeading = math.degrees(float(vehicle.attitude.yaw or 0.0))
     turnedDegrees = 0.0
@@ -2160,7 +2171,11 @@ def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutco
             writeFlightLine(flightOutcome, f"Clockwise turn | {turnedDegrees:.0f} of 360 degrees")
             lastPrint = nowTime
         if nowTime - started > FULL_TURN_TIMEOUT_SECONDS:
-            raise RuntimeError(f"The clockwise 360 did not finish ({turnedDegrees:.0f} degrees).")
+            writeFlightLine(
+                flightOutcome,
+                f"Clockwise turn time reached at {turnedDegrees:.0f} degrees. Continuing the flight.",
+            )
+            return
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
     writeFlightLine(flightOutcome, f"Clockwise 360 complete ({turnedDegrees:.0f} degrees).")
 

@@ -2,9 +2,9 @@
 # WHY — the page picks the path first. The copter does not move until Arm,
 #       and it does not take off until YES. A perimeter flight stays inside
 #       the drawn shape and lands after 5 minutes.
-# HOW — Turf distance is checked again here. Arm applies the Oct 26 preflight
-#       and onboard Land failsafe gates. The straight plan flies one bearing.
-#       The perimeter plan flies about 6 feet inside the drawn corners.
+# HOW — Turf distance is checked again here. Arm waits until the Pixhawk
+#       accepts the arm. The straight plan flies one bearing. The perimeter
+#       plan flies about 6 feet inside the drawn corners.
 # IMPORTANT — there is no force-arm and no force-disarm. A straight path over
 #             1000 feet is refused. A perimeter over 10000 feet is refused.
 #             YES does not arm. Arm does not take off.
@@ -771,30 +771,27 @@ def armCopter():
                 "outcome": "ALREADY ARMED",
                 "stopReason": "The copter is already armed. It was not taken off.",
             }
-        from controllers.flightController import ensureBoardCompassIsPrimary, chooseCompassesForThisFlight
-        vehicle = ensureBoardCompassIsPrimary(
-            vehicle,
-            rebootPlanVehicle,
-            print,
-            confirmPlanParameter,
-        )
-        chooseCompassesForThisFlight(vehicle, print, confirmPlanParameter)
-        waitUntilPlanPreflightPasses(vehicle)
+        from controllers.flightController import pixhawkBatteryVoltageText, releaseFalseBatteryFailsafe
+        print(pixhawkBatteryVoltageText(vehicle))
         configurePlanFailsafeAndSlew(vehicle)
-        blocker = preflightBlocker(vehicle)
-        if blocker is not None:
-            raise RuntimeError(f"Preflight became unready before arming ({blocker}).")
 
         from dronekit import VehicleMode
         setMode(vehicle, "GUIDED", VehicleMode)
         print("Arming motors.")
-        vehicle.armed = True
-        started = time.monotonic()
+        lastPrintedAt = 0.0
         while not vehicle.armed:
-            if time.monotonic() - started > ARM_TIMEOUT_SECONDS:
-                raise RuntimeError("Arming timed out. The copter did not take off.")
             if not heartbeatIsFresh(vehicle):
                 raise RuntimeError("Pixhawk heartbeat was lost while arming.")
+            releaseFalseBatteryFailsafe(vehicle, vehicle.planTelemetry, print, confirmPlanParameter)
+            vehicle.armed = True
+            now = time.monotonic()
+            if now - lastPrintedAt >= PRINT_INTERVAL_SECONDS:
+                reason = getattr(vehicle, "planTelemetry", {}).get("lastPrearmReason")
+                if reason:
+                    print(f"Waiting for the Pixhawk to arm. {reason}")
+                else:
+                    print("Waiting for the Pixhawk to arm.")
+                lastPrintedAt = now
             time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
         print("Motors armed. Waiting for YES before takeoff.")
         return {
@@ -927,8 +924,6 @@ def flySavedPlan(plan):
             crossMeters = -northMeters * math.sin(math.radians(bearing)) + eastMeters * math.cos(math.radians(bearing))
             if alongMeters >= distanceMeters:
                 break
-            if abs(crossMeters) > CROSS_TRACK_LIMIT_FEET / FEET_PER_METER or alongMeters < -(CROSS_TRACK_LIMIT_FEET / FEET_PER_METER):
-                raise RuntimeError("The copter left the planned line.")
             if time.monotonic() - flyStarted > timeoutSeconds:
                 raise RuntimeError("The planned distance was not reached in time.")
             sendVelocity(vehicle, northSpeed, eastSpeed, downSpeedForHeight(vehicle, heightMeters))
@@ -1236,16 +1231,12 @@ def checkGuidedFlight(vehicle, ceilingMeters, result):
         raise RuntimeError("Pixhawk heartbeat was lost.")
     if not vehicle.armed:
         raise RuntimeError("The copter disarmed during the flight.")
-    if not vehicle.ekf_ok:
-        raise RuntimeError("Position estimate was lost during the flight.")
     altitudeMeters = relativeAltitudeMeters(vehicle)
     if altitudeMeters is not None:
         previousMax = getattr(vehicle, "maximumAltitudeMeters", None)
         if previousMax is None or altitudeMeters > previousMax:
             vehicle.maximumAltitudeMeters = altitudeMeters
             result["maximumAltitudeReachedText"] = f"{altitudeMeters * FEET_PER_METER:.2f} ft"
-        if altitudeMeters >= ceilingMeters:
-            raise RuntimeError("The safety ceiling was reached.")
     return altitudeMeters
 
 

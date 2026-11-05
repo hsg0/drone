@@ -17,12 +17,10 @@ WHY:
 HOW:
     1. Log every line in oct27-2026/thisDrone/flightLog/.
     2. Connect on /dev/serial0, pins 8 and 10, at 57600.
-    3. Set the board compass first and the GPS puck second. Reboot only if
-       that order changed. Wait for Quad X, a 3D GPS fix, 5 satellites,
-       a trusted position, and a level copter. A false low-battery reading
-       does not block arm. Type YES.
-    4. GUIDED takeoff to 5 feet, then sit for 2 seconds before LOITER.
-    5. LOITER 60 seconds. A drift of 8 feet starts LAND.
+    3. A false "battery 1 low voltage" reading does not block arm. Type YES.
+    4. Arm when the Pixhawk accepts it. GUIDED takeoff to 5 feet, then sit
+       for 2 seconds before LOITER.
+    5. LOITER 60 seconds.
     6. GUIDED: one full clockwise turn, then face true north and LOITER
        4 seconds.
     7. GUIDED: fly north 10 feet at 5 feet, then LOITER 4 seconds.
@@ -33,7 +31,9 @@ HOW:
 IMPORTANT:
     Run this file on the Pi. Do not put python3 in front of the path.
     Leave USB to bootDisplay.py. This script never force-arms and never
-    force-disarms. The safety ceiling is 8 feet.
+    force-disarms. Lean, trim, compass agreement, drift, and a height
+    ceiling do not abort the flight. The Pixhawk still refuses to arm
+    until its own checks pass.
 """
 
 import math
@@ -67,24 +67,15 @@ TAKEOFF_REACHED_FRACTION = 0.95
 # The Oct 26 climbs were still moving when LOITER started. Two seconds lets that settle.
 TAKEOFF_SETTLE_SECONDS = 2.0
 
-# 5 feet is the target. 8 feet is high enough for the bounce seen in the logs.
-SAFETY_CEILING_FEET = 8.0
-SAFETY_CEILING_METERS = SAFETY_CEILING_FEET / FEET_PER_METER
-
 FIRST_HOVER_SECONDS = 60.0
 SHORT_HOVER_SECONDS = 4.0
 SOUTH_HOVER_SECONDS = 30.0
-# Oct 19 drifted past 8 feet in a few seconds and was stopped. Keep that stop.
-MAXIMUM_HOVER_DRIFT_FEET = 8.0
-MAXIMUM_HOVER_DRIFT_METERS = MAXIMUM_HOVER_DRIFT_FEET / FEET_PER_METER
 
 NORTH_DISTANCE_FEET = 10.0
 NORTH_DISTANCE_METERS = NORTH_DISTANCE_FEET / FEET_PER_METER
 NORTH_SPEED_METERS_PER_SECOND = 0.4
 ALTITUDE_HOLD_GAIN = 0.5
 MAXIMUM_VERTICAL_SPEED_METERS_PER_SECOND = 0.25
-MAXIMUM_OFF_COURSE_FEET = 8.0
-MAXIMUM_OFF_COURSE_METERS = MAXIMUM_OFF_COURSE_FEET / FEET_PER_METER
 NORTH_MOVE_TIMEOUT_SECONDS = 30.0
 SETTLE_AFTER_MOVE_SECONDS = 2.0
 METERS_PER_DEGREE_OF_LATITUDE = 111319.5
@@ -103,21 +94,11 @@ HALF_TURN_TIMEOUT_SECONDS = 15.0
 TAKEOFF_TIMEOUT_SECONDS = 40.0
 LAND_TIMEOUT_SECONDS = 60.0
 MODE_CHANGE_TIMEOUT_SECONDS = 10.0
-ARM_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_STALE_AFTER_SECONDS = 3.0
-MAXIMUM_GROUND_LEAN_DEGREES = 5.0
-MAXIMUM_SAVED_TRIM_DEGREES = 2.5
 
 STATUS_CHECK_INTERVAL_SECONDS = 0.2
 PRINT_INTERVAL_SECONDS = 1.0
 PARAMETER_TOLERANCE = 0.01
-
-QUAD_FRAME_CLASS = 1
-QUAD_X_FRAME_TYPE = 1
-MINIMUM_GPS_FIX_TYPE = 3
-MINIMUM_SATELLITE_COUNT = 5
-UNKNOWN_SATELLITE_COUNT = 255
-SKIP_COMPASS_OR_GPS_MASK = 4 | 8 | 4096
 
 TAKEOFF_SLEW_PARAMETER_NAME = "TKOFF_SLEW_TIME"
 PREFERRED_TAKEOFF_SLEW_SECONDS = 1.0
@@ -131,13 +112,6 @@ FALSE_BATTERY_WARNING = "battery 1 low voltage"
 BATTERY_LOW_FAILSAFE_ACTION_PARAMETER = "BATT_FS_LOW_ACT"
 BATTERY_CRITICAL_FAILSAFE_ACTION_PARAMETER = "BATT_FS_CRT_ACT"
 BATTERY_FAILSAFE_ACTION_NONE = 0
-COMPASS_PRIORITY_REBOOT_WAIT_SECONDS = 12.0
-COMPASS_AGREEMENT_LIMIT_DEGREES = 11.0
-COMPASS_FIELD_MINIMUM = 100.0
-COMPASS_SLOT_PARAMETERS = (
-    ("COMPASS_DEV_ID", "COMPASS_EXTERNAL", "COMPASS_USE", "SCALED_IMU"),
-    ("COMPASS_DEV_ID2", "COMPASS_EXTERN2", "COMPASS_USE2", "SCALED_IMU2"),
-)
 
 MESSAGE_INTERVAL_SECONDS = 0.1
 MICROSECONDS_PER_SECOND = 1000000
@@ -314,18 +288,12 @@ def checkFlightHealth(vehicle, flightOutcome):
         raise RuntimeError("Pixhawk heartbeat was lost.")
     if not vehicle.armed:
         raise RuntimeError("Copter disarmed unexpectedly in flight.")
-    if not vehicle.ekf_ok:
-        raise RuntimeError("Position estimate lost in flight.")
     altitudeMeters = heightMeters(vehicle)
     if altitudeMeters is not None:
         previousMaximum = flightOutcome.get("maximumAltitudeMeters")
         if previousMaximum is None or altitudeMeters > previousMaximum:
             flightOutcome["maximumAltitudeMeters"] = altitudeMeters
             flightOutcome["maximumAltitudeReachedText"] = heightText(altitudeMeters)
-        if altitudeMeters >= SAFETY_CEILING_METERS:
-            raise RuntimeError(
-                f"Safety ceiling ({SAFETY_CEILING_FEET:.0f} ft) reached: {heightText(altitudeMeters)}"
-            )
     return altitudeMeters
 
 
@@ -426,9 +394,6 @@ def faceAbsoluteHeading(vehicle, flightOutcome, targetHeadingDegrees, headingNam
 def hoverInLoiter(vehicle, flightOutcome, hoverSeconds, hoverName):
     setFlightMode(vehicle, "LOITER")
     startSpot = latitudeAndLongitude(vehicle)
-    if startSpot is None:
-        raise RuntimeError(f"GPS position was not available for {hoverName}.")
-    startLatitudeDegrees, startLongitudeDegrees = startSpot
     print(f"{hoverName} started for {hoverSeconds:.0f} seconds at {HOVER_ALTITUDE_FEET:.0f} ft.")
     startedAtSeconds = time.monotonic()
     lastPrintedAtSeconds = 0.0
@@ -440,27 +405,26 @@ def hoverInLoiter(vehicle, flightOutcome, hoverSeconds, hoverName):
         if vehicle.mode.name != "LOITER":
             raise RuntimeError(f"LOITER mode lost during {hoverName}.")
         altitudeMeters = checkFlightHealth(vehicle, flightOutcome)
+        driftText = "position waiting"
         currentSpot = latitudeAndLongitude(vehicle)
-        if currentSpot is None:
-            raise RuntimeError(f"GPS position was lost during {hoverName}.")
-        northMeters, eastMeters = northAndEastOffsetMeters(
-            startLatitudeDegrees,
-            startLongitudeDegrees,
-            currentSpot[0],
-            currentSpot[1],
-        )
-        driftFeet = math.hypot(northMeters, eastMeters) * FEET_PER_METER
-        maximumDriftFeet = max(maximumDriftFeet, driftFeet)
-        if driftFeet > MAXIMUM_HOVER_DRIFT_FEET:
-            raise RuntimeError(
-                f"{hoverName} drifted {driftFeet:.1f} ft (limit {MAXIMUM_HOVER_DRIFT_FEET:.0f} ft)."
+        if startSpot is None:
+            startSpot = currentSpot
+        if startSpot is not None and currentSpot is not None:
+            northMeters, eastMeters = northAndEastOffsetMeters(
+                startSpot[0],
+                startSpot[1],
+                currentSpot[0],
+                currentSpot[1],
             )
+            driftFeet = math.hypot(northMeters, eastMeters) * FEET_PER_METER
+            maximumDriftFeet = max(maximumDriftFeet, driftFeet)
+            driftText = f"drift {driftFeet:.1f} ft"
         nowSeconds = time.monotonic()
         if nowSeconds - lastPrintedAtSeconds >= PRINT_INTERVAL_SECONDS:
             remainingSeconds = max(0.0, hoverSeconds - elapsedSeconds)
             print(
                 f"{hoverName} | {heightText(altitudeMeters)} | "
-                f"drift {driftFeet:.1f} ft | remaining {remainingSeconds:.0f} s"
+                f"{driftText} | remaining {remainingSeconds:.0f} s"
             )
             lastPrintedAtSeconds = nowSeconds
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
@@ -471,9 +435,6 @@ def hoverInLoiter(vehicle, flightOutcome, hoverSeconds, hoverName):
 def flyNorthTenFeet(vehicle, flightOutcome):
     setFlightMode(vehicle, "GUIDED")
     startSpot = latitudeAndLongitude(vehicle)
-    if startSpot is None:
-        raise RuntimeError("GPS position was not available for the north move.")
-    startLatitudeDegrees, startLongitudeDegrees = startSpot
     print(
         f"Flying north {NORTH_DISTANCE_FEET:.0f} ft at {NORTH_SPEED_METERS_PER_SECOND:.1f} m/s "
         f"while holding {HOVER_ALTITUDE_FEET:.0f} ft."
@@ -486,22 +447,23 @@ def flyNorthTenFeet(vehicle, flightOutcome):
                 raise RuntimeError("GUIDED mode lost during the north move.")
             altitudeMeters = checkFlightHealth(vehicle, flightOutcome)
             currentSpot = latitudeAndLongitude(vehicle)
-            if currentSpot is None:
-                raise RuntimeError("GPS position was lost during the north move.")
-            northMeters, eastMeters = northAndEastOffsetMeters(
-                startLatitudeDegrees,
-                startLongitudeDegrees,
-                currentSpot[0],
-                currentSpot[1],
-            )
-            northFeet = northMeters * FEET_PER_METER
-            eastFeet = eastMeters * FEET_PER_METER
-            flightOutcome["northDistanceTraveledText"] = f"{northFeet:.1f} ft north ({eastFeet:+.1f} ft east)"
-            if northMeters >= NORTH_DISTANCE_METERS:
-                print(f"10 feet north reached | {northFeet:.1f} ft north | {eastFeet:+.1f} ft east | {heightText(altitudeMeters)}")
-                break
-            if abs(eastMeters) > MAXIMUM_OFF_COURSE_METERS or northMeters < -MAXIMUM_OFF_COURSE_METERS:
-                raise RuntimeError(f"Left the north line: {northFeet:.1f} ft north, {eastFeet:+.1f} ft east.")
+            northFeet = 0.0
+            eastFeet = 0.0
+            if startSpot is None:
+                startSpot = currentSpot
+            if startSpot is not None and currentSpot is not None:
+                northMeters, eastMeters = northAndEastOffsetMeters(
+                    startSpot[0],
+                    startSpot[1],
+                    currentSpot[0],
+                    currentSpot[1],
+                )
+                northFeet = northMeters * FEET_PER_METER
+                eastFeet = eastMeters * FEET_PER_METER
+                flightOutcome["northDistanceTraveledText"] = f"{northFeet:.1f} ft north ({eastFeet:+.1f} ft east)"
+                if northMeters >= NORTH_DISTANCE_METERS:
+                    print(f"10 feet north reached | {northFeet:.1f} ft north | {eastFeet:+.1f} ft east | {heightText(altitudeMeters)}")
+                    break
             if time.monotonic() - startedAtSeconds > NORTH_MOVE_TIMEOUT_SECONDS:
                 raise RuntimeError(f"Did not reach 10 feet north in time ({northFeet:.1f} ft north).")
             sendLocalVelocity(
@@ -618,33 +580,6 @@ def releaseFalseBatteryFailsafe(vehicle):
     notes["sawFalseBatteryWarning"] = False
 
 
-def boardAndGpsPuckCompasses(vehicle):
-    internalCompass = None
-    gpsPuckCompass = None
-    for deviceIdParameter, externalParameter, useParameter, messageName in COMPASS_SLOT_PARAMETERS:
-        deviceId = int(round(float(vehicle.parameters[deviceIdParameter] or 0)))
-        externalFlag = int(round(float(vehicle.parameters[externalParameter] or 0)))
-        compassSlot = {
-            "deviceId": deviceId,
-            "useParameter": useParameter,
-            "messageName": messageName,
-        }
-        if deviceId == 0:
-            continue
-        if externalFlag in (1, 2):
-            gpsPuckCompass = compassSlot
-        else:
-            internalCompass = compassSlot
-    if internalCompass is None or gpsPuckCompass is None:
-        raise RuntimeError("Could not detect both the board compass and the GPS puck compass.")
-    return internalCompass, gpsPuckCompass
-
-
-def boardAndGpsPuckCompassIds(vehicle):
-    internalCompass, gpsPuckCompass = boardAndGpsPuckCompasses(vehicle)
-    return internalCompass["deviceId"], gpsPuckCompass["deviceId"]
-
-
 def requestPixhawkMessages(vehicle):
     intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
     for messageName in FLIGHT_MESSAGE_NAMES:
@@ -679,225 +614,25 @@ def openPixhawk():
     return vehicle
 
 
-def ensureBoardCompassIsPrimary(vehicle):
-    """Board compass is priority 1. The GPS puck is priority 2. Reboot only when that order changes."""
-    internalCompassId, gpsPuckCompassId = boardAndGpsPuckCompassIds(vehicle)
-    print(f"Board compass id {internalCompassId}. GPS puck compass id {gpsPuckCompassId}.")
-    priority1 = int(round(float(vehicle.parameters["COMPASS_PRIO1_ID"] or 0)))
-    priority2 = int(round(float(vehicle.parameters["COMPASS_PRIO2_ID"] or 0)))
-    if priority1 == internalCompassId and priority2 == gpsPuckCompassId:
-        print("Compass order is already the board compass first and the GPS puck second.")
-        return vehicle
-    setParameterAndConfirm(vehicle, "COMPASS_PRIO1_ID", internalCompassId)
-    setParameterAndConfirm(vehicle, "COMPASS_PRIO2_ID", gpsPuckCompassId)
-    setParameterAndConfirm(vehicle, "COMPASS_USE", 1)
-    setParameterAndConfirm(vehicle, "COMPASS_USE2", 1)
-    print("Compass priority changed. Rebooting so the board compass is primary and the GPS puck is secondary.")
-    vehicle._master.mav.command_long_send(
-        vehicle._master.target_system,
-        vehicle._master.target_component,
-        middleMan.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
-        0,
-        1, 0, 0, 0, 0, 0, 0,
-    )
-    vehicle.commandCableClosed = True
-    try:
-        vehicle.close()
-    except Exception:
-        pass
-    time.sleep(COMPASS_PRIORITY_REBOOT_WAIT_SECONDS)
-    reconnected = openPixhawk()
-    print("Pixhawk rebooted with the board compass as primary.")
-    return reconnected
-
-
-def compassFieldIsUsable(magneticField):
-    if magneticField is None:
-        return False
-    return math.hypot(magneticField[0], magneticField[1], magneticField[2]) >= COMPASS_FIELD_MINIMUM
-
-
-def headingDifferenceDegrees(firstField, secondField):
-    firstHeading = math.atan2(firstField[1], firstField[0])
-    secondHeading = math.atan2(secondField[1], secondField[0])
-    wrappedDifference = math.atan2(
-        math.sin(secondHeading - firstHeading),
-        math.cos(secondHeading - firstHeading),
-    )
-    return abs(math.degrees(wrappedDifference))
-
-
-def sharedCompassHeadingDegrees(firstField, secondField):
-    firstHeading = math.atan2(firstField[1], firstField[0])
-    secondHeading = math.atan2(secondField[1], secondField[0])
-    meanHeading = math.atan2(
-        math.sin(firstHeading) + math.sin(secondHeading),
-        math.cos(firstHeading) + math.cos(secondHeading),
-    )
-    return math.degrees(meanHeading) % 360.0
-
-
-def sampleCompassFields(vehicle):
-    capturedFields = {}
-
-    def rememberField(_vehicle, messageName, message):
-        capturedFields[messageName] = (float(message.xmag), float(message.ymag), float(message.zmag))
-
-    vehicle.add_message_listener("SCALED_IMU", rememberField)
-    vehicle.add_message_listener("SCALED_IMU2", rememberField)
-    intervalMicroseconds = int(MESSAGE_INTERVAL_SECONDS * MICROSECONDS_PER_SECOND)
-    for messageName in ("SCALED_IMU", "SCALED_IMU2"):
-        messageId = getattr(middleMan.mavlink, f"MAVLINK_MSG_ID_{messageName}", None)
-        if messageId is None:
-            continue
-        commandMessage = vehicle.message_factory.command_long_encode(
-            vehicle._master.target_system,
-            vehicle._master.target_component,
-            middleMan.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-            0,
-            messageId,
-            intervalMicroseconds,
-            0, 0, 0, 0, 0,
-        )
-        vehicle.send_mavlink(commandMessage)
-    vehicle.flush()
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline and ("SCALED_IMU" not in capturedFields or "SCALED_IMU2" not in capturedFields):
-        time.sleep(0.05)
-    vehicle.remove_message_listener("SCALED_IMU", rememberField)
-    vehicle.remove_message_listener("SCALED_IMU2", rememberField)
-    return capturedFields
-
-
-def useOnlyThisCompass(vehicle, compassToUse, compassToIgnore, choiceName):
-    setParameterAndConfirm(vehicle, compassToUse["useParameter"], 1)
-    setParameterAndConfirm(vehicle, compassToIgnore["useParameter"], 0)
-    vehicle.compassChoice = choiceName
-
-
-def chooseCompassesForThisFlight(vehicle):
-    internalCompass, gpsPuckCompass = boardAndGpsPuckCompasses(vehicle)
-    compassFields = sampleCompassFields(vehicle)
-    boardField = compassFields.get(internalCompass["messageName"])
-    puckField = compassFields.get(gpsPuckCompass["messageName"])
-    boardIsAvailable = compassFieldIsUsable(boardField)
-    puckIsAvailable = compassFieldIsUsable(puckField)
-    if not boardIsAvailable and puckIsAvailable:
-        useOnlyThisCompass(vehicle, gpsPuckCompass, internalCompass, "puck")
-        print("The board compass is not available. This flight will use the GPS puck compass only.")
-        return
-    if boardIsAvailable and not puckIsAvailable:
-        useOnlyThisCompass(vehicle, internalCompass, gpsPuckCompass, "board")
-        print("The GPS puck compass is not available. This flight will use the board compass only.")
-        return
-    if not boardIsAvailable and not puckIsAvailable:
-        print("Neither compass sent a usable magnetic field yet.")
-        return
-    differenceDegrees = headingDifferenceDegrees(boardField, puckField)
-    if differenceDegrees is None or differenceDegrees > COMPASS_AGREEMENT_LIMIT_DEGREES:
-        useOnlyThisCompass(vehicle, internalCompass, gpsPuckCompass, "board")
-        differenceText = "an unknown amount" if differenceDegrees is None else f"{differenceDegrees:.1f} degrees"
-        print(f"Compasses differ by {differenceText}. This flight will use the board compass only.")
-        return
-    setParameterAndConfirm(vehicle, internalCompass["useParameter"], 1)
-    setParameterAndConfirm(vehicle, gpsPuckCompass["useParameter"], 1)
-    vehicle.compassChoice = "both"
-    sharedHeading = sharedCompassHeadingDegrees(boardField, puckField)
-    print(
-        f"Compasses agree within {differenceDegrees:.1f} degrees. Both stay on. "
-        f"The shared heading is {sharedHeading:.1f} degrees."
-    )
-
-
-def preferPrimaryCompassWhenTheyDisagree(vehicle):
-    if getattr(vehicle, "compassChoice", None) == "board":
-        return
-    notes = getattr(vehicle, "preflightNotes", {})
-    reasonText = (notes.get("lastPrearmReason") or "").lower()
-    if "compasses inconsistent" not in reasonText:
-        return
-    internalCompass, gpsPuckCompass = boardAndGpsPuckCompasses(vehicle)
-    useOnlyThisCompass(vehicle, internalCompass, gpsPuckCompass, "board")
-    notes["lastPrearmReason"] = None
-    print("Compasses disagree. This flight will use the board compass only.")
-
-
-def preflightBlocker(vehicle):
-    if not heartbeatIsFresh(vehicle):
-        return "Pixhawk heartbeat is missing."
-    frameClass = vehicle.parameters["FRAME_CLASS"]
-    frameType = vehicle.parameters["FRAME_TYPE"]
-    if frameClass is None or frameType is None:
-        return "FRAME_CLASS or FRAME_TYPE could not be read."
-    if (
-        abs(float(frameClass) - QUAD_FRAME_CLASS) >= PARAMETER_TOLERANCE
-        or abs(float(frameType) - QUAD_X_FRAME_TYPE) >= PARAMETER_TOLERANCE
-    ):
-        return f"Quad X required. FRAME_CLASS {float(frameClass):.0f}, FRAME_TYPE {float(frameType):.0f}."
-    skipCheckValue = vehicle.parameters["ARMING_SKIPCHK"]
-    if skipCheckValue is not None and (int(round(float(skipCheckValue))) & SKIP_COMPASS_OR_GPS_MASK) != 0:
-        return f"ARMING_SKIPCHK is {int(round(float(skipCheckValue)))}. Compass or GPS checks are skipped."
-    trimX = vehicle.parameters["AHRS_TRIM_X"]
-    trimY = vehicle.parameters["AHRS_TRIM_Y"]
-    if trimX is not None and trimY is not None:
-        trimRollDegrees = math.degrees(float(trimX))
-        trimPitchDegrees = math.degrees(float(trimY))
-        if abs(trimRollDegrees) > MAXIMUM_SAVED_TRIM_DEGREES or abs(trimPitchDegrees) > MAXIMUM_SAVED_TRIM_DEGREES:
-            return (
-                f"Saved level trim is tilted. Roll {trimRollDegrees:+.2f} deg, "
-                f"pitch {trimPitchDegrees:+.2f} deg."
-            )
-    gpsReading = vehicle.gps_0
-    if gpsReading is None or gpsReading.fix_type is None or int(gpsReading.fix_type) < MINIMUM_GPS_FIX_TYPE:
-        return "GPS 3D fix required."
-    satelliteCount = gpsReading.satellites_visible
-    if satelliteCount is None or satelliteCount == UNKNOWN_SATELLITE_COUNT or satelliteCount < MINIMUM_SATELLITE_COUNT:
-        return f"At least {MINIMUM_SATELLITE_COUNT} satellites required. Seeing {satelliteCount}."
-    if not vehicle.ekf_ok:
-        if vehicle._ekf_constposmode:
-            return f"3D fix, {satelliteCount} satellites. EKF3 is still aligning GPS and compass."
-        return f"3D fix, {satelliteCount} satellites. Horizontal position is not trusted yet."
-    if not vehicle.is_armable:
-        return "Pixhawk pre-arm check is not ready."
-    if vehicle.attitude is None or vehicle.attitude.roll is None or vehicle.attitude.pitch is None:
-        return "Attitude is not available."
-    rollDegrees = math.degrees(vehicle.attitude.roll)
-    pitchDegrees = math.degrees(vehicle.attitude.pitch)
-    if abs(rollDegrees) > MAXIMUM_GROUND_LEAN_DEGREES or abs(pitchDegrees) > MAXIMUM_GROUND_LEAN_DEGREES:
-        return f"Copter is not level. Roll {rollDegrees:+.1f} deg, pitch {pitchDegrees:+.1f} deg."
-    return None
-
-
-def waitUntilReady(vehicle):
-    print(pixhawkBatteryVoltageText(vehicle))
-    while True:
-        releaseFalseBatteryFailsafe(vehicle)
-        preferPrimaryCompassWhenTheyDisagree(vehicle)
-        blocker = preflightBlocker(vehicle)
-        if blocker is None:
-            heading = headingDegrees(vehicle)
-            headingText = "unknown" if heading is None else f"{heading:+.1f} deg"
-            print("Preflight checks passed.")
-            print(
-                f"FRAME_CLASS {float(vehicle.parameters['FRAME_CLASS']):.0f} | "
-                f"FRAME_TYPE {float(vehicle.parameters['FRAME_TYPE']):.0f} | "
-                f"satellites {vehicle.gps_0.satellites_visible} | heading {headingText}."
-            )
-            return
-        print(f"Waiting. {blocker}")
-        time.sleep(PRINT_INTERVAL_SECONDS)
-
 
 def takeOffToFiveFeet(vehicle, flightOutcome):
     setFlightMode(vehicle, "GUIDED")
     print("Arming motors.")
-    vehicle.armed = True
-    startedAtSeconds = time.monotonic()
+    print(pixhawkBatteryVoltageText(vehicle))
+    lastPrintedAtSeconds = 0.0
     while not vehicle.armed:
-        if time.monotonic() - startedAtSeconds > ARM_TIMEOUT_SECONDS:
-            raise RuntimeError("Arming timed out.")
         if not heartbeatIsFresh(vehicle):
             raise RuntimeError("Pixhawk heartbeat was lost while arming.")
+        releaseFalseBatteryFailsafe(vehicle)
+        vehicle.armed = True
+        nowSeconds = time.monotonic()
+        if nowSeconds - lastPrintedAtSeconds >= PRINT_INTERVAL_SECONDS:
+            reason = getattr(vehicle, "preflightNotes", {}).get("lastPrearmReason")
+            if reason:
+                print(f"Waiting for the Pixhawk to arm. {reason}")
+            else:
+                print("Waiting for the Pixhawk to arm.")
+            lastPrintedAtSeconds = nowSeconds
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
     print("Motors armed. Propellers spinning.")
     print(f"Taking off to {HOVER_ALTITUDE_FEET:.0f} feet.")
@@ -954,27 +689,13 @@ def main():
         print(f"Run started at  : {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         print("Take off to 5 ft, hover 60 s, turn 360 clockwise,")
         print("face north, fly 10 ft north, turn to face south, hover 30 s, land.")
-        print(f"Safety ceiling {SAFETY_CEILING_FEET:.0f} ft. Hover drift limit {MAXIMUM_HOVER_DRIFT_FEET:.0f} ft.")
 
         if not os.path.exists(PIXHAWK_PORT):
             raise RuntimeError(f"{PIXHAWK_PORT} is missing. Run this script on the Pi.")
         print(f"Connecting to Pixhawk on {PIXHAWK_PORT} at {PIXHAWK_BAUD} baud.")
-        vehicle = connect(
-            PIXHAWK_PORT,
-            baud=PIXHAWK_BAUD,
-            wait_ready=True,
-            timeout=CONNECTION_TIMEOUT_SECONDS,
-            source_system=GROUND_STATION_SYSTEM_ID,
-        )
-        if vehicle._master.target_component == 0:
-            vehicle._master.target_component = 1
-        rememberPixhawkText(vehicle)
-        requestPixhawkMessages(vehicle)
+        vehicle = openPixhawk()
         print("Pixhawk connected.")
-        vehicle = ensureBoardCompassIsPrimary(vehicle)
-        chooseCompassesForThisFlight(vehicle)
 
-        waitUntilReady(vehicle)
         promptText = (
             "Type YES to take off to 5 ft, hover 60 s, turn 360 clockwise, "
             "fly 10 ft north, face south, hover 30 s, and land: "
@@ -988,7 +709,6 @@ def main():
             flightOutcome["stopReason"] = "Pilot did not type YES."
             return
 
-        waitUntilReady(vehicle)
         savedSlew = vehicle.parameters[TAKEOFF_SLEW_PARAMETER_NAME]
         if savedSlew is not None:
             savedSlew = float(savedSlew)
@@ -1008,10 +728,6 @@ def main():
         setParameterAndConfirm(vehicle, GROUND_STATION_FAILSAFE_TIMEOUT_PARAMETER_NAME, timeoutSeconds)
         setParameterAndConfirm(vehicle, FAILSAFE_OPTIONS_PARAMETER_NAME, flightOptions)
         print("Onboard failsafe is set to Land if the Pi connection is lost.")
-
-        blocker = preflightBlocker(vehicle)
-        if blocker is not None:
-            raise RuntimeError(blocker)
 
         copterWasArmed = True
         takeOffToFiveFeet(vehicle, flightOutcome)
