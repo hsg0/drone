@@ -1,7 +1,7 @@
 # WHAT — save a map plan, arm, disarm, or fly that plan.
 # WHY — the page picks the path first. The copter does not move until Arm,
 #       and it does not take off until YES. A perimeter flight stays inside
-#       the drawn shape and lands after 5 minutes.
+#       the drawn shape. There is no time limit.
 # HOW — Turf distance is checked again here. Arm waits until the Pixhawk
 #       accepts the arm. The straight plan flies one bearing. The perimeter
 #       plan flies about 6 feet inside the drawn corners.
@@ -36,7 +36,6 @@ MAXIMUM_SPEED_METERS_PER_SECOND = 2.0
 MINIMUM_SPEED_METERS_PER_SECOND = 0.2
 CEILING_MARGIN_FEET = 10.0
 CROSS_TRACK_LIMIT_FEET = 50.0
-PERIMETER_FLIGHT_SECONDS = 300.0
 INSET_FEET = 6.0
 MINIMUM_PERIMETER_CORNERS = 3
 MAXIMUM_PERIMETER_CORNERS = 12
@@ -429,7 +428,6 @@ def confirmedPerimeter(body):
         "heightFeet": round(heightFeet, 1),
         "speedMetersPerSecond": round(speedMetersPerSecond, 2),
         "corridorWidthFeet": round(corridorWidthFeet, 1),
-        "flightSeconds": PERIMETER_FLIGHT_SECONDS,
     }
 
 
@@ -444,7 +442,6 @@ def flySavedPerimeter(plan):
         "heightFeet": plan.get("heightFeet"),
         "speedMetersPerSecond": plan.get("speedMetersPerSecond"),
         "corridorWidthFeet": plan.get("corridorWidthFeet", DEFAULT_CORRIDOR_WIDTH_FEET),
-        "flightSeconds": PERIMETER_FLIGHT_SECONDS,
         "maximumAltitudeReachedText": "none",
         "outcome": "FAILED",
         "stopReason": None,
@@ -461,7 +458,7 @@ def flySavedPerimeter(plan):
         corridorHalfMeters = (corridorWidthFeet / 2.0) / FEET_PER_METER
         drawnCorners = plan["corners"]
         insetCorners = plan["insetCorners"]
-        notePerimeterProgress(vehicle, force=True, phase="taking-off", lockPoint=None, secondsRemaining=PERIMETER_FLIGHT_SECONDS, outcome=None, stopReason=None)
+        notePerimeterProgress(vehicle, force=True, phase="taking-off", lockPoint=None, secondsRemaining=None, outcome=None, stopReason=None)
         if not copterIsInsidePerimeter(vehicle, drawnCorners):
             raise RuntimeError("The copter is outside the drawn perimeter. It was not taken off.")
 
@@ -471,33 +468,36 @@ def flySavedPerimeter(plan):
         takeoffStarted = time.monotonic()
         while True:
             altitudeMeters = checkGuidedFlight(vehicle, ceilingMeters, result)
-            notePerimeterProgress(vehicle, phase="taking-off", secondsRemaining=PERIMETER_FLIGHT_SECONDS)
-            if altitudeMeters is not None and altitudeMeters >= heightMeters * TAKEOFF_REACHED_FRACTION:
+            notePerimeterProgress(vehicle, phase="taking-off", secondsRemaining=None)
+            if altitudeMeters is not None and altitudeMeters >= heightMeters:
+                print(f"Reached {heightFeet:.0f} feet. Stopping the climb.")
+                sendVelocity(vehicle, 0.0, 0.0, downSpeedForHeight(vehicle, heightMeters))
                 break
             if time.monotonic() - takeoffStarted > TAKEOFF_TIMEOUT_SECONDS:
-                raise RuntimeError("Takeoff timed out.")
+                print(f"Takeoff time reached. Holding {heightFeet:.0f} feet.")
+                sendVelocity(vehicle, 0.0, 0.0, downSpeedForHeight(vehicle, heightMeters))
+                break
             time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
 
         settleStarted = time.monotonic()
         while time.monotonic() - settleStarted < TAKEOFF_SETTLE_SECONDS:
             checkGuidedFlight(vehicle, ceilingMeters, result)
-            notePerimeterProgress(vehicle, phase="taking-off", secondsRemaining=PERIMETER_FLIGHT_SECONDS)
+            sendVelocity(vehicle, 0.0, 0.0, downSpeedForHeight(vehicle, heightMeters))
+            notePerimeterProgress(vehicle, phase="taking-off", secondsRemaining=None)
             time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
 
-        print("Flying the inside edge for 5 minutes.")
-        patternStarted = time.monotonic()
+        print("Flying the inside edge. There is no time limit.")
         cornerIndex = 0
-        while time.monotonic() - patternStarted < PERIMETER_FLIGHT_SECONDS:
+        while True:
             checkGuidedFlight(vehicle, ceilingMeters, result)
             insideFence = copterIsInsidePerimeter(vehicle, drawnCorners)
             distanceFromLineMeters = distanceToFlightLineMeters(vehicle, insetCorners)
             insideCorridor = distanceFromLineMeters <= corridorHalfMeters
-            secondsRemaining = max(0, int(PERIMETER_FLIGHT_SECONDS - (time.monotonic() - patternStarted)))
             notePerimeterProgress(
                 vehicle,
                 phase="flying",
                 lockPoint=cornerIndex + 1,
-                secondsRemaining=secondsRemaining,
+                secondsRemaining=None,
                 insideFence=insideFence,
                 insideCorridor=insideCorridor,
             )
@@ -509,6 +509,7 @@ def flySavedPerimeter(plan):
             northMeters, eastMeters = metersFromCopterTo(vehicle, target["lat"], target["lon"])
             distanceMeters = math.hypot(northMeters, eastMeters)
             if distanceMeters <= CORNER_ARRIVAL_METERS:
+                sendVelocity(vehicle, 0.0, 0.0, downSpeedForHeight(vehicle, heightMeters))
                 cornerIndex = (cornerIndex + 1) % len(insetCorners)
                 continue
             sendVelocity(
@@ -531,7 +532,7 @@ def flySavedPerimeter(plan):
         landAndWaitForDisarm(vehicle, VehicleMode, result)
         if result["outcome"] != "ONBOARD FAILSAFE":
             result["outcome"] = "SUCCESS"
-            result["stopReason"] = "Flew the inside edge for 5 minutes, then landed."
+            result["stopReason"] = "The perimeter flight ended, then landed."
         notePerimeterProgress(
             vehicle,
             force=True,

@@ -88,7 +88,7 @@ function App() {
         <h2>Autonomous</h2>
         <div className="buttonRow">
           <Link className="brightButton autonomousButton" to="/autonomous/5-minutes">
-            5 minute perimeter
+            Perimeter
           </Link>
         </div>
       </section>

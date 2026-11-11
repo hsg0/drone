@@ -13,28 +13,21 @@ import {
 import { LiveFlightSteps } from "./liveFlightSteps.jsx"
 
 const FLIGHT_STEPS = [
-  "Take off to 6 feet, then come up to a hover at 7 feet.",
-  "Hover at 7 feet for 10 seconds. Stay in this upright pose.",
-  "Turn clockwise 360 degrees. Keep the drone upright. Do not flip it. The nose turns to the right until it points the same way it started.",
-  "Hover for 5 seconds.",
-  "Fly east 10 feet at 7 feet. This is a straight move, not a flip.",
-  "Hover for 5 seconds.",
-  "Turn clockwise 360 degrees again. Stay upright.",
-  "Hover for 5 seconds.",
-  "Fly west 20 feet at 7 feet.",
-  "Hover for 5 seconds.",
-  "Turn clockwise 360 degrees. Stay upright.",
-  "Hover for 5 seconds.",
-  "Fly east 10 feet at 7 feet. This brings the copter back over the east-west start.",
-  "Hover for 5 seconds.",
-  "Fly north 10 feet at 7 feet.",
-  "Hover for 5 seconds.",
-  "Turn clockwise 360 degrees. Stay upright.",
-  "Hover for 5 seconds.",
-  "Fly south 10 feet at 7 feet.",
-  "Hover for 5 seconds.",
-  "Turn clockwise 360 degrees. Stay upright.",
-  "Hover for 5 seconds.",
+  "Take off and stop the climb at 5 feet. Hold 5 feet for the rest of the flight.",
+  "Hover at 5 feet for 60 seconds.",
+  "Fly north 10 feet.",
+  "Turn clockwise 360 degrees.",
+  "Hover for 20 seconds.",
+  "Fly south 10 feet.",
+  "Hover for 20 seconds.",
+  "Turn clockwise 360 degrees.",
+  "Fly east 10 feet.",
+  "Hover for 20 seconds.",
+  "Turn clockwise 360 degrees.",
+  "Fly west 10 feet.",
+  "Hover for 20 seconds.",
+  "Turn clockwise 360 degrees. This turn finishes before landing.",
+  "Hover for 20 seconds.",
   "Land until the propellers stop.",
 ]
 
@@ -147,7 +140,7 @@ function Fly10EastWestNorthSouthTurns() {
     <main className="screen">
       <h1>fly10feetE360W360N360S360Land</h1>
       <p>
-        The drone stays upright. A 360 is one clockwise turn in place. East, west, north, and south are straight moves at 7 feet.
+        Take off to 5 feet and hold that height. North, south, east, and west are 10-foot moves. Each 360 is one clockwise turn in place.
       </p>
       <button className="brightButton clearButton" type="button" onClick={clearFlights}>
         Clear flights before flying

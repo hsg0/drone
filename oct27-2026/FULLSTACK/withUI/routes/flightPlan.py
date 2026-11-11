@@ -4,7 +4,7 @@
 #       saves a closed perimeter. POST /flight-plans/arm arms.
 #       POST /flight-plans/disarm disarms and closes the cable.
 #       POST /flight-plans/fly takes off only when the body says YES.
-#       POST /flight-plans/perimeter/fly flies the inside edge for 5 minutes.
+#       POST /flight-plans/perimeter/fly flies the inside edge with no time limit.
 #       GET /flight-plans/perimeter/progress returns the latest flight note.
 # IMPORTANT — do not put Pixhawk decisions in this file.
 

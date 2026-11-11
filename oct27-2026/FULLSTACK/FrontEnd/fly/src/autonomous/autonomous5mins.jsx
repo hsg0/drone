@@ -7,7 +7,7 @@ import { armForFlightPlan, backendBaseUrl, closeCameraConnection, disarmForFligh
 import "leaflet/dist/leaflet.css"
 
 const MAXIMUM_PERIMETER_FEET = 10000
-const DEFAULT_CENTER = [39.5, -98.35]
+const CURRENT_LOCATION_ZOOM = 18
 const ICE_WAIT_MILLISECONDS = 3000
 
 function AutonomousFiveMinutes() {
@@ -27,6 +27,8 @@ function AutonomousFiveMinutes() {
   const [pictureSource, setPictureSource] = useState("off")
   const [cameraStatus, setCameraStatus] = useState("The camera is off. Turning it on does not arm the copter.")
   const [liveProgress, setLiveProgress] = useState(null)
+  const [currentLocation, setCurrentLocation] = useState(null)
+  const cornersWerePlacedRef = useRef(false)
 
   const perimeterFeet = useMemo(() => perimeterLengthFeet(corners, perimeterIsClosed), [corners, perimeterIsClosed])
   const perimeterIsAllowed = perimeterFeet !== null && perimeterFeet <= MAXIMUM_PERIMETER_FEET
@@ -36,7 +38,11 @@ function AutonomousFiveMinutes() {
 
   useEffect(() => {
     const progressSocket = io(backendBaseUrl, { transports: ["websocket", "polling"] })
+    progressSocket.on("connect", () => progressSocket.emit("watch-ewns-telemetry"))
     progressSocket.on("perimeter-progress", (progress) => setLiveProgress(progress))
+    progressSocket.on("ewns-telemetry", (telemetry) => {
+      rememberCopterLocation(telemetry?.latitude, telemetry?.longitude, setCurrentLocation, cornersWerePlacedRef)
+    })
     return () => {
       progressSocket.close()
     }
@@ -65,6 +71,7 @@ function AutonomousFiveMinutes() {
 
   function addCorner(latitude, longitude) {
     if (perimeterIsClosed || flightIsRunning) return
+    cornersWerePlacedRef.current = true
     const nextCorner = { lat: latitude, lon: longitude }
     if (corners.length > 0) {
       const previousCorner = corners[corners.length - 1]
@@ -120,7 +127,7 @@ function AutonomousFiveMinutes() {
       })
       if (result.outcome === "SAVED" && result.id) {
         setSavedPlan(result)
-        setFlightStatus(`Perimeter saved as ${result.id}. Arm first. YES takes off and flies for 5 minutes.`)
+        setFlightStatus(`Perimeter saved as ${result.id}. Arm first. YES takes off and flies the inside edge.`)
         return
       }
       setFlightStatus(result.stopReason || "The perimeter was not saved.")
@@ -160,7 +167,7 @@ function AutonomousFiveMinutes() {
   async function takeOff() {
     armedOnGroundRef.current = false
     setFlightIsRunning(true)
-    setFlightStatus("Flying the inside edge for 5 minutes. The copter will land when the time is up.")
+    setFlightStatus("Flying the inside edge. There is no time limit.")
     if (pictureSource === "off") {
       turnCameraOn()
     }
@@ -245,13 +252,15 @@ function AutonomousFiveMinutes() {
 
   return (
     <main className="screen">
-      <h1>5 minute perimeter</h1>
+      <h1>Perimeter</h1>
       <p>
-        Draw the fence, then close it. After Arm and YES, the copter flies inside that line for 5 minutes and then lands. Leaving the fence also lands it. The camera does not move the copter.
+        Draw the fence, then close it. After Arm and YES, the copter flies inside that line. There is no time limit. Leaving the fence also lands it. The camera does not move the copter.
       </p>
-      <MapContainer className="flightMap" center={DEFAULT_CENTER} zoom={4}>
+      {currentLocation ? (
+      <MapContainer className="flightMap" center={currentLocation} zoom={CURRENT_LOCATION_ZOOM}>
         <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        <JumpToCurrentLocation />
+        <ZoomToCurrentLocation location={currentLocation} />
+        <CircleMarker center={currentLocation} radius={8} pathOptions={{ color: "#2ee6a6" }} />
         <MapClickCatcher onPick={addCorner} />
         {corners.map((corner, index) => (
           <CircleMarker
@@ -276,6 +285,9 @@ function AutonomousFiveMinutes() {
           <Polyline positions={corridorOutside} pathOptions={{ color: "#ff3b3b", weight: 2 }} />
         ) : null}
       </MapContainer>
+      ) : (
+        <p className="flightMap">Finding the current location...</p>
+      )}
 
       <section className="planFacts">
         <p>Corners: {corners.length}{perimeterIsClosed ? ", closed" : ""}</p>
@@ -349,7 +361,7 @@ function AutonomousFiveMinutes() {
           Disarm
         </button>
         <button className="brightButton flyPerimeterButton" type="button" onClick={takeOff} disabled={!savedPlan || !armed || flightIsRunning}>
-          {flightIsRunning ? "Flying..." : "YES — fly 5 minutes"}
+          {flightIsRunning ? "Flying..." : "YES — fly the perimeter"}
         </button>
       </div>
       {flightStatus ? <p>{flightStatus}</p> : null}
@@ -361,7 +373,7 @@ function AutonomousFiveMinutes() {
           <p>Longitude: {liveProgress.longitude == null ? "waiting" : Number(liveProgress.longitude).toFixed(6)}</p>
           <p>Height: {liveProgress.heightFeet == null ? "waiting" : `${liveProgress.heightFeet} feet`}</p>
           <p>Lock point: {liveProgress.lockPoint == null ? "waiting" : liveProgress.lockPoint}</p>
-          <p>Time remaining: {liveProgress.secondsRemaining == null ? "waiting" : `${liveProgress.secondsRemaining} seconds`}</p>
+          <p>Time limit: none</p>
           <p>Inside the fence: {liveProgress.insideFence == null ? "waiting" : liveProgress.insideFence ? "yes" : "no"}</p>
           <p>Inside the corridor: {liveProgress.insideCorridor == null ? "waiting" : liveProgress.insideCorridor ? "yes" : "no"}</p>
         </section>
@@ -429,15 +441,23 @@ function waitForIce(peer) {
   })
 }
 
-function JumpToCurrentLocation() {
+function rememberCopterLocation(latitude, longitude, setCurrentLocation, cornersWerePlacedRef) {
+  if (cornersWerePlacedRef.current) return
+  const latitudeNumber = Number(latitude)
+  const longitudeNumber = Number(longitude)
+  if (!Number.isFinite(latitudeNumber) || !Number.isFinite(longitudeNumber)) return
+  if (Math.abs(latitudeNumber) < 0.01 && Math.abs(longitudeNumber) < 0.01) return
+  setCurrentLocation([latitudeNumber, longitudeNumber])
+}
+
+function ZoomToCurrentLocation({ location }) {
   const map = useMap()
+  const hasOpenedOnCopterRef = useRef(false)
   useEffect(() => {
-    if (!navigator.geolocation) return undefined
-    navigator.geolocation.getCurrentPosition((position) => {
-      map.setView([position.coords.latitude, position.coords.longitude], 17)
-    })
-    return undefined
-  }, [map])
+    if (hasOpenedOnCopterRef.current) return
+    hasOpenedOnCopterRef.current = true
+    map.setView(location, CURRENT_LOCATION_ZOOM)
+  }, [map, location])
   return null
 }
 

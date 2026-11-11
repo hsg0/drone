@@ -376,20 +376,17 @@ def runFly10FeetEastWestNorthSouthLand():
         commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
         copterWasArmed = True
         armAndWait(vehicle, flightOutcome, latestTelemetry)
-        climbToFiveFeet(vehicle, flightOutcome)
-        settleAtFiveFeet(vehicle, flightOutcome)
+        climbToFiveFeet(vehicle, flightOutcome, velocityTypeMask)
+        settleAtFiveFeet(vehicle, flightOutcome, velocityTypeMask)
         flightOutcome["steps"]["takeoff"] = "SUCCESS"
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "after takeoff")
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "after takeoff", velocityTypeMask=velocityTypeMask)
 
-        commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
         faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome)
         for directionName, northSpeed, eastSpeed in CARDINAL_LEGS:
             if vehicle.mode.name != "GUIDED":
                 commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
             flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, velocityTypeMask)
-            commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-            holdHoverAtFiveFeet(vehicle, flightOutcome, f"after {directionName}")
+            holdHoverAtFiveFeet(vehicle, flightOutcome, f"after {directionName}", velocityTypeMask=velocityTypeMask)
 
         landingWasStarted = True
         landUntilPropellersStop(vehicle, flightOutcome, VehicleMode)
@@ -1223,10 +1220,9 @@ def armAndWait(vehicle, flightOutcome, latestTelemetry):
     writeFlightLine(flightOutcome, "Motors armed. Propellers spinning.")
 
 
-def climbToFiveFeet(vehicle, flightOutcome):
+def climbToFiveFeet(vehicle, flightOutcome, velocityTypeMask):
     writeFlightLine(flightOutcome, f"Taking off to {HOVER_ALTITUDE_FEET:.0f} feet.")
     vehicle.simple_takeoff(HOVER_ALTITUDE_METERS)
-    minimumAltitudeMeters = HOVER_ALTITUDE_METERS * TAKEOFF_REACHED_FRACTION
     takeoffStartTime = time.monotonic()
     lastPrintTime = 0.0
     while True:
@@ -1240,60 +1236,56 @@ def climbToFiveFeet(vehicle, flightOutcome):
             heightText = "waiting" if altitudeMeters is None else f"{altitudeMeters * FEET_PER_METER:.2f} ft"
             writeFlightLine(flightOutcome, f"Climbing to 5 ft | {heightText}")
             lastPrintTime = nowTime
-        if altitudeMeters is not None and altitudeMeters >= minimumAltitudeMeters:
-            writeFlightLine(flightOutcome, f"Reached 5 feet ({altitudeMeters * FEET_PER_METER:.2f} ft).")
+        if altitudeMeters is not None and altitudeMeters >= HOVER_ALTITUDE_METERS:
+            writeFlightLine(flightOutcome, f"Reached 5 feet ({altitudeMeters * FEET_PER_METER:.2f} ft). Stopping the climb.")
+            holdFiveFeet(vehicle, altitudeMeters, velocityTypeMask)
             return
         if nowTime - takeoffStartTime > TAKEOFF_TIMEOUT_SECONDS:
-            raise RuntimeError("Takeoff timed out.")
+            writeFlightLine(flightOutcome, "Takeoff time reached. Holding 5 feet.")
+            holdFiveFeet(vehicle, altitudeMeters, velocityTypeMask)
+            return
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
 
 
-def settleAtFiveFeet(vehicle, flightOutcome):
-    writeFlightLine(flightOutcome, f"Settling for {TAKEOFF_SETTLE_SECONDS:.0f} seconds before the hover.")
+def settleAtFiveFeet(vehicle, flightOutcome, velocityTypeMask=None):
+    writeFlightLine(flightOutcome, f"Holding 5 feet for {TAKEOFF_SETTLE_SECONDS:.0f} seconds before the hover.")
     settleStart = time.monotonic()
     while time.monotonic() - settleStart < TAKEOFF_SETTLE_SECONDS:
         raiseIfFlightStopped()
         if vehicle.mode.name != "GUIDED":
             raiseIfFlightStopped()
             raise RuntimeError("GUIDED mode lost during the takeoff settle.")
-        checkFlightHealthAndCeiling(vehicle, flightOutcome)
+        altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
+        holdFiveFeet(vehicle, altitudeMeters, velocityTypeMask)
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
 
 
-def holdHoverAtFiveFeet(vehicle, flightOutcome, hoverName, durationSeconds=None):
+def holdHoverAtFiveFeet(vehicle, flightOutcome, hoverName, durationSeconds=None, velocityTypeMask=None):
     if durationSeconds is None:
         durationSeconds = HOVER_DURATION_SECONDS
-    startSpot = readLatitudeAndLongitude(vehicle)
-    writeFlightLine(flightOutcome, f"Hover {hoverName} started for {durationSeconds:.0f} seconds.")
+    from dronekit import VehicleMode
+    commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
+    writeFlightLine(flightOutcome, f"Hover {hoverName} started for {durationSeconds:.0f} seconds at {HOVER_ALTITUDE_FEET:.0f} ft.")
     hoverStartTime = time.monotonic()
     lastPrintTime = 0.0
-    largestDriftFeet = 0.0
     while True:
         raiseIfFlightStopped()
         elapsedSeconds = time.monotonic() - hoverStartTime
         if elapsedSeconds >= durationSeconds:
             break
-        if vehicle.mode.name != "LOITER":
+        if vehicle.mode.name != "GUIDED":
             raiseIfFlightStopped()
-            raise RuntimeError(f"LOITER mode lost during the {hoverName} hover.")
+            raise RuntimeError(f"GUIDED mode lost during the {hoverName} hover.")
         altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
-        driftText = "position waiting"
-        if startSpot is None:
-            startSpot = readLatitudeAndLongitude(vehicle)
-        if startSpot is not None:
-            offset = readNorthAndEastMeters(vehicle, startSpot[0], startSpot[1])
-            if offset is not None:
-                driftFeet = math.hypot(offset[0], offset[1]) * FEET_PER_METER
-                largestDriftFeet = max(largestDriftFeet, driftFeet)
-                driftText = f"drift {driftFeet:.1f} ft"
+        holdFiveFeet(vehicle, altitudeMeters, velocityTypeMask)
         nowTime = time.monotonic()
         if nowTime - lastPrintTime >= PRINT_INTERVAL_SECONDS:
             remainingSeconds = max(0.0, durationSeconds - elapsedSeconds)
             heightText = "waiting" if altitudeMeters is None else f"{altitudeMeters * FEET_PER_METER:.2f} ft"
-            writeFlightLine(flightOutcome, f"Hover {hoverName} | {heightText} | {driftText} | remaining {remainingSeconds:.0f} s")
+            writeFlightLine(flightOutcome, f"Hover {hoverName} | {heightText} | remaining {remainingSeconds:.0f} s")
             lastPrintTime = nowTime
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
-    flightOutcome["steps"][f"hover {hoverName}"] = f"SUCCESS (max drift {largestDriftFeet:.1f} ft)"
+    flightOutcome["steps"][f"hover {hoverName}"] = "SUCCESS"
     writeFlightLine(flightOutcome, f"Hover {hoverName} completed.")
 
 
@@ -1333,8 +1325,8 @@ def faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome, alt
     settleStart = time.monotonic()
     while time.monotonic() - settleStart < YAW_SETTLE_SECONDS:
         raiseIfFlightStopped()
-        checkFlightHealthAndCeiling(vehicle, flightOutcome)
-        sendLocalVelocity(vehicle, 0.0, 0.0, 0.0, velocityTypeMask)
+        altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
+        holdFiveFeet(vehicle, altitudeMeters, velocityTypeMask, targetAltitudeMeters)
         time.sleep(STATUS_CHECK_INTERVAL_SECONDS)
 
 
@@ -1345,7 +1337,8 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
         altitudeFeet = HOVER_ALTITUDE_FEET
     distanceMeters = distanceFeet / FEET_PER_METER
     targetAltitudeMeters = altitudeFeet / FEET_PER_METER
-    legTimeoutSeconds = max(LEG_TIMEOUT_SECONDS, (distanceMeters / abs(northSpeed or eastSpeed or LEG_SPEED_METERS_PER_SECOND)) * 2.0 + 10.0)
+    legSpeedMetersPerSecond = abs(northSpeed or eastSpeed or LEG_SPEED_METERS_PER_SECOND)
+    legMinimumSeconds = distanceMeters / legSpeedMetersPerSecond
     startSpot = readLatitudeAndLongitude(vehicle)
     writeFlightLine(flightOutcome, f"Flying {directionName} {distanceFeet:.0f} ft at {altitudeFeet:.0f} ft.")
     legStartTime = time.monotonic()
@@ -1357,23 +1350,6 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
                 raiseIfFlightStopped()
                 raise RuntimeError(f"GUIDED mode lost during the {directionName} leg.")
             altitudeMeters = checkFlightHealthAndCeiling(vehicle, flightOutcome)
-            progressFeet = 0.0
-            if startSpot is None:
-                startSpot = readLatitudeAndLongitude(vehicle)
-            if startSpot is not None:
-                offset = readNorthAndEastMeters(vehicle, startSpot[0], startSpot[1])
-                if offset is not None:
-                    progressMeters, _crossTrackMeters = progressAndCrossTrackMeters(directionName, offset[0], offset[1])
-                    progressFeet = progressMeters * FEET_PER_METER
-                    if progressMeters >= distanceMeters:
-                        writeFlightLine(flightOutcome, f"{distanceFeet:.0f} feet {directionName} reached | {progressFeet:.1f} ft")
-                        break
-            if time.monotonic() - legStartTime > legTimeoutSeconds:
-                writeFlightLine(
-                    flightOutcome,
-                    f"{directionName} leg time reached at {progressFeet:.1f} ft. Continuing the flight.",
-                )
-                break
             sendLocalVelocity(
                 vehicle,
                 northSpeed,
@@ -1381,6 +1357,28 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
                 downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters),
                 velocityTypeMask,
             )
+            elapsedSeconds = time.monotonic() - legStartTime
+            progressFeet = 0.0
+            currentSpot = readLatitudeAndLongitude(vehicle)
+            if startSpot is None:
+                startSpot = currentSpot
+            if startSpot is not None and currentSpot is not None:
+                offset = readNorthAndEastMeters(vehicle, startSpot[0], startSpot[1])
+                if offset is not None:
+                    progressMeters, _crossTrackMeters = progressAndCrossTrackMeters(directionName, offset[0], offset[1])
+                    progressFeet = progressMeters * FEET_PER_METER
+            legHasFlownLongEnough = elapsedSeconds >= legMinimumSeconds
+            gpsDistanceIsComplete = progressFeet >= distanceFeet
+            noGpsPosition = startSpot is None or currentSpot is None
+            if legHasFlownLongEnough and gpsDistanceIsComplete:
+                writeFlightLine(flightOutcome, f"{distanceFeet:.0f} feet {directionName} reached | {progressFeet:.1f} ft")
+                break
+            if legHasFlownLongEnough and noGpsPosition:
+                writeFlightLine(
+                    flightOutcome,
+                    f"{directionName} leg flew for {elapsedSeconds:.0f} seconds without a GPS distance. Continuing the flight.",
+                )
+                break
             nowTime = time.monotonic()
             if nowTime - lastPrintTime >= PRINT_INTERVAL_SECONDS:
                 heightText = "waiting" if altitudeMeters is None else f"{altitudeMeters * FEET_PER_METER:.2f} ft"
@@ -1402,7 +1400,7 @@ def flyTenFeet(vehicle, flightOutcome, directionName, northSpeed, eastSpeed, vel
     finally:
         if pixhawkHeartbeatIsFresh(vehicle) and not getattr(vehicle, "commandCableClosed", False) and not flightStopRequested and not flightReturnHomeRequested and not flightClearRequested:
             try:
-                sendLocalVelocity(vehicle, 0.0, 0.0, 0.0, velocityTypeMask)
+                holdFiveFeet(vehicle, checkFlightHealthAndCeiling(vehicle, flightOutcome), velocityTypeMask, targetAltitudeMeters)
             except Exception as stopError:
                 writeFlightLine(flightOutcome, f"Could not send the stop speed: {stopError}")
 
@@ -1849,6 +1847,33 @@ def commandFaceGeographicNorth(vehicle, middleMan):
     vehicle.flush()
 
 
+def holdFiveFeet(vehicle, altitudeMeters, velocityTypeMask=None, targetAltitudeMeters=None):
+    """GUIDED speed that stays at the target height. This replaces a takeoff climb."""
+    if velocityTypeMask is None:
+        velocityTypeMask = guidedVelocityTypeMask()
+    sendLocalVelocity(
+        vehicle,
+        0.0,
+        0.0,
+        downSpeedToHoldFiveFeet(altitudeMeters, targetAltitudeMeters),
+        velocityTypeMask,
+    )
+
+
+def guidedVelocityTypeMask():
+    from pymavlink import mavutil as middleMan
+    return (
+        middleMan.mavlink.POSITION_TARGET_TYPEMASK_X_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_Y_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_Z_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE
+        | middleMan.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+    )
+
+
 def sendLocalVelocity(vehicle, northMetersPerSecond, eastMetersPerSecond, downMetersPerSecond, velocityTypeMask):
     raiseIfFlightStopped()
     message = vehicle.message_factory.set_position_target_local_ned_encode(
@@ -1868,11 +1893,8 @@ def sendLocalVelocity(vehicle, northMetersPerSecond, eastMetersPerSecond, downMe
     vehicle.flush()
 
 
-TURN_MISSION_TAKEOFF_FEET = 6.0
-TURN_MISSION_HOVER_FEET = 7.0
-TURN_MISSION_CEILING_FEET = 12.0
-TURN_MISSION_FIRST_HOVER_SECONDS = 10.0
-TURN_MISSION_SHORT_HOVER_SECONDS = 5.0
+FIRST_PATTERN_HOVER_SECONDS = 60.0
+LEG_PATTERN_HOVER_SECONDS = 20.0
 FULL_TURN_DEGREES = 360.0
 FULL_TURN_DONE_DEGREES = 345.0
 FULL_TURN_TIMEOUT_SECONDS = 25.0
@@ -1944,7 +1966,7 @@ def runTurnMission():
     try:
         writeFlightLine(
             flightOutcome,
-            "TAKE OFF TO 6 FT -> HOVER AT 7 FT FOR 10S -> 360 CLOCKWISE -> HOVER 5S -> EAST 10 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> WEST 20 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> EAST 10 FT -> HOVER 5S -> NORTH 10 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> SOUTH 10 FT -> HOVER 5S -> 360 CLOCKWISE -> HOVER 5S -> LAND",
+            "TAKE OFF TO 5 FT AND HOLD 5 FT -> HOVER 60S -> NORTH 10 FT -> 360 -> HOVER 20S -> SOUTH 10 FT -> HOVER 20S -> 360 -> EAST 10 FT -> HOVER 20S -> 360 -> WEST 10 FT -> HOVER 20S -> 360 -> HOVER 20S -> LAND",
         )
         releaseEwnsPageTelemetry()
         if not os.path.exists(PIXHAWK_PORT):
@@ -1990,37 +2012,33 @@ def runTurnMission():
         commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
         copterWasArmed = True
         armAndWait(vehicle, flightOutcome, latestTelemetry)
-        climbFromTakeoffToHover(vehicle, flightOutcome, TURN_MISSION_TAKEOFF_FEET, TURN_MISSION_HOVER_FEET)
-        settleAtFiveFeet(vehicle, flightOutcome)
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "at 7 feet", TURN_MISSION_FIRST_HOVER_SECONDS)
+        climbToFiveFeet(vehicle, flightOutcome, velocityTypeMask)
+        settleAtFiveFeet(vehicle, flightOutcome, velocityTypeMask)
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "First hover", FIRST_PATTERN_HOVER_SECONDS, velocityTypeMask)
 
-        commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
-        faceGeographicNorth(vehicle, middleMan, velocityTypeMask, flightOutcome, altitudeFeet=TURN_MISSION_HOVER_FEET)
-        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after the first hover")
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "after the first turn", TURN_MISSION_SHORT_HOVER_SECONDS)
+        flyTenFeet(vehicle, flightOutcome, "north", LEG_SPEED_METERS_PER_SECOND, 0.0, velocityTypeMask)
+        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after north")
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "after the north turn", LEG_PATTERN_HOVER_SECONDS, velocityTypeMask)
 
-        flyCardinalLeg(vehicle, flightOutcome, "east", 10, velocityTypeMask, VehicleMode, middleMan)
-        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after flying east")
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "after the east turn", TURN_MISSION_SHORT_HOVER_SECONDS)
+        flyTenFeet(vehicle, flightOutcome, "south", -LEG_SPEED_METERS_PER_SECOND, 0.0, velocityTypeMask)
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "after south", LEG_PATTERN_HOVER_SECONDS, velocityTypeMask)
+        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after south")
 
-        flyCardinalLeg(vehicle, flightOutcome, "west", 20, velocityTypeMask, VehicleMode, middleMan)
-        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after flying west")
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "after the west turn", TURN_MISSION_SHORT_HOVER_SECONDS)
+        flyTenFeet(vehicle, flightOutcome, "east", 0.0, LEG_SPEED_METERS_PER_SECOND, velocityTypeMask)
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "after east", LEG_PATTERN_HOVER_SECONDS, velocityTypeMask)
+        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after east")
 
-        flyCardinalLeg(vehicle, flightOutcome, "east", 10, velocityTypeMask, VehicleMode, middleMan, hoverAfter=True)
-        flyCardinalLeg(vehicle, flightOutcome, "north", 10, velocityTypeMask, VehicleMode, middleMan)
-        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after flying north")
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "after the north turn", TURN_MISSION_SHORT_HOVER_SECONDS)
-
-        flyCardinalLeg(vehicle, flightOutcome, "south", 10, velocityTypeMask, VehicleMode, middleMan)
-        turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, "after flying south")
-        commandFlightMode(vehicle, "LOITER", VehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, "before landing", TURN_MISSION_SHORT_HOVER_SECONDS)
+        flyTenFeet(vehicle, flightOutcome, "west", 0.0, -LEG_SPEED_METERS_PER_SECOND, velocityTypeMask)
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "after west", LEG_PATTERN_HOVER_SECONDS, velocityTypeMask)
+        turnClockwiseOneFullCircle(
+            vehicle,
+            middleMan,
+            velocityTypeMask,
+            flightOutcome,
+            "before landing",
+            finishBeforeContinuing=True,
+        )
+        holdHoverAtFiveFeet(vehicle, flightOutcome, "before landing", LEG_PATTERN_HOVER_SECONDS, velocityTypeMask)
 
         landingWasStarted = True
         landUntilPropellersStop(vehicle, flightOutcome, VehicleMode)
@@ -2131,20 +2149,25 @@ def flyCardinalLeg(vehicle, flightOutcome, directionName, distanceFeet, velocity
         eastSpeed,
         velocityTypeMask,
         distanceFeet=distanceFeet,
-        altitudeFeet=TURN_MISSION_HOVER_FEET,
+        altitudeFeet=HOVER_ALTITUDE_FEET,
     )
     if hoverAfter:
-        commandFlightMode(vehicle, "LOITER", vehicleMode, flightOutcome)
-        holdHoverAtFiveFeet(vehicle, flightOutcome, f"after {directionName} {distanceFeet:.0f} ft", TURN_MISSION_SHORT_HOVER_SECONDS)
-        commandFlightMode(vehicle, "GUIDED", vehicleMode, flightOutcome)
+        holdHoverAtFiveFeet(
+            vehicle,
+            flightOutcome,
+            f"after {directionName} {distanceFeet:.0f} ft",
+            LEG_PATTERN_HOVER_SECONDS,
+            velocityTypeMask,
+        )
 
 
-def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, turnName):
+def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutcome, turnName, finishBeforeContinuing=False):
+    from dronekit import VehicleMode
     raiseIfFlightStopped()
     if vehicle.mode.name != "GUIDED":
-        raise RuntimeError("GUIDED mode was lost before the clockwise turn.")
+        commandFlightMode(vehicle, "GUIDED", VehicleMode, flightOutcome)
     writeFlightLine(flightOutcome, f"Turning clockwise 360 degrees, {turnName}.")
-    targetAltitudeMeters = TURN_MISSION_HOVER_FEET / FEET_PER_METER
+    targetAltitudeMeters = HOVER_ALTITUDE_METERS
     lastHeading = math.degrees(float(vehicle.attitude.yaw or 0.0))
     turnedDegrees = 0.0
     started = time.monotonic()
@@ -2170,7 +2193,7 @@ def turnClockwiseOneFullCircle(vehicle, middleMan, velocityTypeMask, flightOutco
         if nowTime - lastPrint >= PRINT_INTERVAL_SECONDS:
             writeFlightLine(flightOutcome, f"Clockwise turn | {turnedDegrees:.0f} of 360 degrees")
             lastPrint = nowTime
-        if nowTime - started > FULL_TURN_TIMEOUT_SECONDS:
+        if not finishBeforeContinuing and nowTime - started > FULL_TURN_TIMEOUT_SECONDS:
             writeFlightLine(
                 flightOutcome,
                 f"Clockwise turn time reached at {turnedDegrees:.0f} degrees. Continuing the flight.",
